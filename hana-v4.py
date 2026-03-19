@@ -272,7 +272,6 @@ def load_all():
             flood_ctrl = SmartFloodController()
     except Exception as e:
         logging.warning(f"⚠️ Gagal load flood control: {e}")
-        flood_ctrl = SmartFlood```python
         flood_ctrl = SmartFloodController()
     except Exception as e:
         logging.warning(f"⚠️ Gagal load flood control: {e}")
