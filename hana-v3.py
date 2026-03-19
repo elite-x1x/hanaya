@@ -145,7 +145,9 @@ def ensure_redis():
 def r_get(key):
     try:
         ensure_redis()
-        return redis_client.get(key) if redis_client else None
+        if redis_client:
+            return redis_client.get(key)
+        return None
     except Exception as e:
         logging.error(f"Redis GET error [{key}]: {e}")
         return None
@@ -238,6 +240,12 @@ def load_all():
         flood_data = r_get_json(KEY_FLOOD_CTRL)
         if flood_data:
             flood_ctrl = SmartFloodController()
+            # Validasi last_flood_time agar tidak error
+            if isinstance(flood_data.get("last_flood_time"), str):
+                try:
+                    flood_data["last_flood_time"] = datetime.fromisoformat(flood_data["last_flood_time"])
+                except Exception:
+                    flood_data["last_flood_time"] = None
             flood_ctrl.__dict__.update(flood_data)
             logging.info("🔄 Flood control state loaded dari Redis")
         else:
@@ -475,7 +483,7 @@ async def send_media_group_with_retry(bot, chat_id, media_items, admin_chat_id=N
 
             if "Flood control" in err or "Too Many Requests" in err:
                 try:
-                    suggested = int(err.split("Retry in ")[-1].split(" "))
+                    suggested = int(err.split("Retry in ")[-1].split(" ")[0])
                 except Exception:
                     suggested = 60
 
@@ -656,9 +664,11 @@ async def queue_worker(bot):
             async with sending_lock:
                 is_sending = False
             save_all()
-            total_sent = r_get(KEY_SENT)  # Bisa dihitung dari Redis
+            total_sent = redis_client.scard(KEY_SENT) if redis_client else 0
             total_pending = len(pending_media)
-            logging.info(f"✅ Selesai | Terkirim: {sent_count}/{total} | Daily: {daily_count}/{DAILY_LIMIT} | 📊 Total: Sent={total_sent} | Pending={total_pending}")
+            logging.info(
+                f"✅ Selesai | Terkirim: {sent_count}/{total} | Daily: {daily_count}/{DAILY_LIMIT} | 📊 Total: Sent={total_sent} | Pending={total_pending}"
+            )
 
 # ============================================================
 # === HANDLER ===
@@ -669,8 +679,13 @@ async def forward_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     fp = get_fingerprint(msg)
-    if not fp or is_duplicate(fp):
-        logging.info(f"❌ Duplikat: {fp['file_id'] [:8]}... | {fp['width']}x{fp['height']} | {fp['duration']}s")
+    if not fp:
+        return
+
+    if is_duplicate(fp):
+        logging.info(
+            f"❌ Duplikat: {fp['file_id'][:8]}... | {fp['width']}x{fp['height']} | {fp['duration']}s"
+        )
         return
 
     file_id    = fp.get('file_id')
@@ -684,7 +699,7 @@ async def forward_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Notifikasi total
     total_pending = len(pending_media)
-    total_sent = r_get(KEY_SENT) or "0"
+    total_sent = redis_client.scard(KEY_SENT) if redis_client else 0
     logging.info(f"📊 Total: Terkirim={total_sent} | Pending={total_pending} | Failed=0")
 
 # ============================================================
@@ -706,7 +721,11 @@ def handle_shutdown(signum, frame):
     logging.info("⚠️ Shutdown signal diterima, menyimpan data...")
     save_all()
     logging.info("✅ Data tersimpan, bot berhenti")
-    sys.exit(0)
+    try:
+        loop = asyncio.get_event_loop()
+        loop.stop()
+    except Exception:
+        sys.exit(0)
 
 # ============================================================
 # === ERROR HANDLER ===
