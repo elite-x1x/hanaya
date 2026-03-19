@@ -7,6 +7,7 @@ import hashlib
 from datetime import datetime, timezone
 import signal
 import sys
+from logging.handlers import RotatingFileHandler
 
 from telegram import Update, InputMediaVideo
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CommandHandler
@@ -18,42 +19,61 @@ load_dotenv()
 # ============================================================
 # === KONFIGURASI UTAMA ===
 # ============================================================
-BOT_TOKEN      = os.getenv("BOT_F_LOKAL", "xxxx")
-TARGET_CHAT_ID = int(os.getenv("CHAT_ID_BEDUL", 1234))
-ADMIN_CHAT_ID  = int(os.getenv("CHAT_ID_ADMIN", 5678))
+BOT_TOKEN      = os.getenv("BOT_F_LOKAL", "")
+TARGET_CHAT_ID = int(os.getenv("CHAT_ID_BEDUL", 0))
+ADMIN_CHAT_ID  = int(os.getenv("CHAT_ID_ADMIN", 0))
 
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN tidak diatur di .env")
 if TARGET_CHAT_ID == 0:
     raise ValueError("❌ CHAT_ID_TARGET tidak diatur di .env")
 if ADMIN_CHAT_ID == 0:
-    logging.warning("⚠️ ADMIN_CHAT_ID tidak diatur — alert flood akan dinonaktifkan")
+    logging.warning("⚠️ ADMIN_CHAT_ID tidak diatur — flood alert dinonaktifkan")
 
 # ============================================================
-# === ADMIN CONFIG ===
+# === ADMIN CONFIG (dari .env) ===
 # ============================================================
-ADMINS = {
-    1234: "superadmin",   # ganti dengan ID Telegram superadmin
-    5678: "moderator",    # contoh moderator
-    9999: "moderator"     # bisa tambah banyak
-}
+def _parse_id_list(env_key: str) -> list[int]:
+    raw = os.getenv(env_key, "")
+    result = []
+    for uid in raw.split(","):
+        uid = uid.strip()
+        if uid:
+            try:
+                result.append(int(uid))
+            except ValueError:
+                logging.warning(f"⚠️ ID tidak valid di {env_key}: '{uid}'")
+    return result
+
+ADMINS: dict[int, str] = {}
+for _uid in _parse_id_list("SUPERADMINS"):
+    ADMINS[_uid] = "superadmin"
+for _uid in _parse_id_list("MODERATORS"):
+    ADMINS[_uid] = "moderator"
+
+if not ADMINS:
+    logging.warning("⚠️ Tidak ada admin terdaftar — semua command admin akan ditolak")
 
 # ============================================================
 # === REDIS CONFIG ===
 # ============================================================
-REDIS_HOST     = os.getenv("REDIS_HOST", "isi_host_anda")
+REDIS_HOST     = os.getenv("REDIS_HOST", "")
 REDIS_PORT     = int(os.getenv("REDIS_PORT", 6379))
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "token_hanaya")
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
+
+if not REDIS_HOST:
+    logging.warning("⚠️ REDIS_HOST tidak diatur — fallback ke mode lokal")
 
 # ============================================================
 # === REDIS KEYS ===
 # ============================================================
-KEY_SENT       = "hanaya:sent"
-KEY_PENDING    = "hanaya:pending"
-KEY_FAILED     = "hanaya:failed"
+KEY_SENT        = "hanaya:sent"
+KEY_PENDING     = "hanaya:pending"
 KEY_DAILY_COUNT = "hanaya:daily_count"
 KEY_DAILY_DATE  = "hanaya:daily_date"
 KEY_FLOOD_CTRL  = "hanaya:flood_ctrl"
+KEY_DAILY_LIMIT = "hanaya:daily_limit"
+KEY_SEND_DELAY  = "hanaya:send_delay"
 
 # ============================================================
 # === TTL CONFIG ===
@@ -74,7 +94,7 @@ BATCH_PAUSE_EVERY       = 30
 BATCH_PAUSE_MIN         = 300
 BATCH_PAUSE_MAX         = 600
 DAILY_LIMIT             = 1500
-MAX_RETRIES             = 2
+MAX_RETRIES             = 3
 MAX_QUEUE_SIZE          = 10000
 AUTO_SAVE_INTERVAL      = 60
 
@@ -91,61 +111,68 @@ FLOOD_WARN_THRESHOLD = 3
 # ============================================================
 # === SETUP LOGGING ===
 # ============================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler("bot.log", encoding="utf-8"),
-        logging.StreamHandler()
-    ]
+_log_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+_file_handler  = RotatingFileHandler(
+    "bot.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
 )
+_file_handler.setFormatter(_log_formatter)
+_stream_handler = logging.StreamHandler()
+_stream_handler.setFormatter(_log_formatter)
+
+logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _stream_handler])
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 
 # ============================================================
 # === GLOBAL STATE ===
 # ============================================================
-pending_media    = []
-is_sending       = False
-daily_count      = 0
-daily_reset_date = datetime.now(timezone.utc).date()
-last_save_time   = datetime.now(timezone.utc)
-sending_lock     = asyncio.Lock()
-flood_ctrl       = None  # ← diinisialisasi di load_all()
-is_paused        = False  # ← diinisialisasi di sini
-local_sent       = set()  # ← fallback jika Redis down
+pending_media:    list   = []
+is_sending:       bool   = False
+daily_count:      int    = 0
+daily_reset_date         = datetime.now(timezone.utc).date()
+last_save_time           = datetime.now(timezone.utc)
+sending_lock             = asyncio.Lock()
+is_paused:        bool   = False
+local_sent:       set    = set()
+MAX_LOCAL_SENT           = 5000  # batas ukuran local_sent fallback
 
 # ============================================================
 # === REDIS CONNECTION ===
 # ============================================================
-redis_client = None
+redis_client: redis.Redis | None = None
 
-def connect_redis():
+def connect_redis() -> None:
     global redis_client
+    if not REDIS_HOST:
+        logging.warning("⚠️ REDIS_HOST kosong, skip koneksi Redis")
+        redis_client = None
+        return
+
     for attempt in range(5):
         try:
-            redis_client = redis.Redis(
+            client = redis.Redis(
                 host=REDIS_HOST,
                 port=REDIS_PORT,
                 password=REDIS_PASSWORD,
                 ssl=True,
                 decode_responses=True,
                 socket_connect_timeout=10,
-                socket_timeout=10
+                socket_timeout=10,
             )
-            redis_client.ping()
+            client.ping()
+            redis_client = client
             logging.info("✅ Redis terhubung!")
             return
         except Exception as e:
             logging.error(f"❌ Redis gagal (percobaan {attempt+1}/5): {e}")
             import time; time.sleep(5)
+
     logging.error("❌ Redis tidak bisa terhubung, fallback ke lokal")
     redis_client = None
 
-def ensure_redis():
+def ensure_redis() -> None:
     global redis_client
     if redis_client is None:
-        logging.warning("⚠️ Redis tidak tersedia, skip reconnect")
         return
     try:
         redis_client.ping()
@@ -156,7 +183,7 @@ def ensure_redis():
 # ============================================================
 # === REDIS HELPERS ===
 # ============================================================
-def r_get(key):
+def r_get(key: str) -> str | None:
     if redis_client is None:
         return None
     try:
@@ -166,7 +193,7 @@ def r_get(key):
         logging.error(f"Redis GET error [{key}]: {e}")
         return None
 
-def r_set(key, value):
+def r_set(key: str, value: str) -> None:
     if redis_client is None:
         return
     try:
@@ -175,17 +202,17 @@ def r_set(key, value):
     except Exception as e:
         logging.error(f"Redis SET error [{key}]: {e}")
 
-def r_sismember(key, value):
+def r_sismember(key: str, value: str) -> bool:
     if redis_client is None:
         return False
     try:
         ensure_redis()
-        return redis_client.sismember(key, value)
+        return bool(redis_client.sismember(key, value))
     except Exception as e:
         logging.error(f"Redis SISMEMBER error [{key}]: {e}")
         return False
 
-def r_sadd_with_ttl(key, value, ttl):
+def r_sadd_with_ttl(key: str, value: str, ttl: int) -> None:
     if redis_client is None:
         return
     try:
@@ -197,7 +224,7 @@ def r_sadd_with_ttl(key, value, ttl):
     except Exception as e:
         logging.error(f"Redis SADD+TTL error [{key}]: {e}")
 
-def r_set_json(key, data):
+def r_set_json(key: str, data: dict) -> None:
     if redis_client is None:
         return
     try:
@@ -206,14 +233,22 @@ def r_set_json(key, data):
     except Exception as e:
         logging.error(f"Redis SET JSON error [{key}]: {e}")
 
-def r_get_json(key):
+def r_get_json(key: str) -> dict | None:
     if redis_client is None:
         return None
     try:
         ensure_redis()
-        data = redis_client.get(key)
-        if data:
-            return json.loads(data)
+        raw = redis_client.get(key)
+        if raw:
+            return json.loads(raw)
+    except json.JSONDecodeError as e:
+        logging.error(f"Redis JSON decode error [{key}]: {e}")
+        # Hapus key korup agar tidak terus gagal
+        try:
+            redis_client.delete(key)
+            logging.warning(f"🗑️ Key korup dihapus: {key}")
+        except Exception:
+            pass
     except Exception as e:
         logging.error(f"Redis GET JSON error [{key}]: {e}")
     return None
@@ -221,25 +256,182 @@ def r_get_json(key):
 # ============================================================
 # === MAKE HASH ===
 # ============================================================
-def make_hash(fingerprint):
-    fp_copy = {k: v for k, v in fingerprint.items() if k != 'file_id'}
+def make_hash(fingerprint: dict) -> str:
+    fp_copy = {k: v for k, v in fingerprint.items() if k not in ("file_id", "timestamp")}
     return hashlib.md5(
         json.dumps(fp_copy, sort_keys=True).encode()
     ).hexdigest()
 
 # ============================================================
+# === SMART FLOOD CONTROLLER ===
+# ============================================================
+class SmartFloodController:
+    """Mengelola flood control dengan penalti kumulatif dan state persistence."""
+
+    def __init__(self):
+        self.flood_count:     int                    = 0
+        self.total_flood:     int                    = 0
+        self.last_flood_time: datetime | None        = None
+        self.penalty:         float                  = 0.0
+        self.is_cooling:      bool                   = False
+        self.group_delay_min: float                  = float(DELAY_BETWEEN_GROUP_MIN)
+        self.group_delay_max: float                  = float(DELAY_BETWEEN_GROUP_MAX)
+
+    # ----------------------------------------------------------
+    def _parse_last_flood_time(self, value) -> datetime | None:
+        """Parse last_flood_time dari berbagai format secara aman."""
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            # Pastikan timezone-aware
+            if value.tzinfo is None:
+                return value.replace(tzinfo=timezone.utc)
+            return value
+        if isinstance(value, str):
+            try:
+                dt = datetime.fromisoformat(value)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+            except (ValueError, TypeError) as e:
+                logging.warning(f"⚠️ Gagal parse last_flood_time '{value}': {e}")
+                return None
+        logging.warning(f"⚠️ Tipe last_flood_time tidak dikenal: {type(value)}")
+        return None
+
+    # ----------------------------------------------------------
+    def record_flood(self, suggested_wait: int) -> float:
+        now = datetime.now(timezone.utc)
+
+        # Reset counter jika sudah lama tidak flood
+        if self.last_flood_time is not None:
+            elapsed = (now - self.last_flood_time).total_seconds()
+            if elapsed > FLOOD_RESET_AFTER:
+                logging.info(
+                    f"🔄 Flood counter direset "
+                    f"(tidak ada flood selama {elapsed:.0f}s)"
+                )
+                self.flood_count = 0
+                self.penalty     = 0.0
+
+        self.flood_count     += 1
+        self.total_flood     += 1
+        self.last_flood_time  = now
+        self.is_cooling       = True
+        self.penalty          = min(
+            float(FLOOD_MAX_PENALTY),
+            float(self.flood_count * FLOOD_PENALTY_STEP)
+        )
+
+        random_add = random.uniform(FLOOD_RANDOM_MIN, FLOOD_RANDOM_MAX)
+        total_wait = float(suggested_wait) + random_add + self.penalty
+
+        self.group_delay_min = min(120.0, DELAY_BETWEEN_GROUP_MIN + (self.flood_count * 5))
+        self.group_delay_max = min(180.0, DELAY_BETWEEN_GROUP_MAX + (self.flood_count * 10))
+
+        logging.warning(
+            f"🚨 FLOOD #{self.flood_count} terdeteksi!\n"
+            f"   ├─ Saran Telegram   : {suggested_wait}s\n"
+            f"   ├─ Random tambahan  : {random_add:.1f}s\n"
+            f"   ├─ Penalti kumulatif: {self.penalty:.0f}s\n"
+            f"   ├─ Total tunggu     : {total_wait:.1f}s\n"
+            f"   └─ Delay group baru : {self.group_delay_min:.0f}s - {self.group_delay_max:.0f}s"
+        )
+
+        self.save_state()
+        return total_wait
+
+    # ----------------------------------------------------------
+    def record_success(self) -> None:
+        if self.penalty > 0:
+            self.penalty = max(0.0, self.penalty - 5.0)
+        if self.flood_count > 0:
+            self.flood_count = max(0, self.flood_count - 1)
+        if self.group_delay_min > DELAY_BETWEEN_GROUP_MIN:
+            self.group_delay_min = max(
+                float(DELAY_BETWEEN_GROUP_MIN), self.group_delay_min - 2.0
+            )
+        if self.group_delay_max > DELAY_BETWEEN_GROUP_MAX:
+            self.group_delay_max = max(
+                float(DELAY_BETWEEN_GROUP_MAX), self.group_delay_max - 3.0
+            )
+        self.is_cooling = False
+        self.save_state()
+
+    # ----------------------------------------------------------
+    def get_group_delay(self) -> float:
+        return random.uniform(self.group_delay_min, self.group_delay_max)
+
+    # ----------------------------------------------------------
+    def get_status(self) -> str:
+        return (
+            f"FloodCtrl | Count: {self.flood_count} | "
+            f"Total: {self.total_flood} | "
+            f"Penalty: {self.penalty:.0f}s | "
+            f"Delay: {self.group_delay_min:.0f}-{self.group_delay_max:.0f}s"
+        )
+
+    # ----------------------------------------------------------
+    def to_dict(self) -> dict:
+        return {
+            "flood_count"    : self.flood_count,
+            "total_flood"    : self.total_flood,
+            "last_flood_time": (
+                self.last_flood_time.isoformat()
+                if self.last_flood_time else None
+            ),
+            "penalty"        : self.penalty,
+            "is_cooling"     : self.is_cooling,
+            "group_delay_min": self.group_delay_min,
+            "group_delay_max": self.group_delay_max,
+        }
+
+    # ----------------------------------------------------------
+    @classmethod
+    def from_dict(cls, data: dict) -> "SmartFloodController":
+        """Buat instance dari dict, dengan validasi aman."""
+        instance = cls()
+        try:
+            instance.flood_count     = int(data.get("flood_count", 0))
+            instance.total_flood     = int(data.get("total_flood", 0))
+            instance.last_flood_time = instance._parse_last_flood_time(
+                data.get("last_flood_time")
+            )
+            instance.penalty         = float(data.get("penalty", 0.0))
+            instance.is_cooling      = bool(data.get("is_cooling", False))
+            instance.group_delay_min = float(data.get("group_delay_min", DELAY_BETWEEN_GROUP_MIN))
+            instance.group_delay_max = float(data.get("group_delay_max", DELAY_BETWEEN_GROUP_MAX))
+        except (TypeError, ValueError) as e:
+            logging.warning(f"⚠️ Gagal load state flood control: {e}")
+            # Reset ke default
+            instance = cls()
+        return instance
+
+    # ----------------------------------------------------------
+    def save_state(self) -> None:
+        try:
+            r_set_json(KEY_FLOOD_CTRL, self.to_dict())
+        except Exception as e:
+            logging.error(f"❌ Gagal save flood ctrl state: {e}")
+
+# ============================================================
 # === LOAD & SAVE ===
 # ============================================================
-def load_all():
+def load_all() -> None:
     global pending_media, daily_count, daily_reset_date, flood_ctrl
 
+    # Load pending media
     try:
         raw = r_get(KEY_PENDING)
-        pending_media = json.loads(raw) if raw else []
-    except Exception as e:
+        if raw:
+            pending_media = json.loads(raw)
+        else:
+            pending_media = []
+    except (json.JSONDecodeError, TypeError) as e:
         logging.error(f"❌ Gagal load pending: {e}")
         pending_media = []
 
+    # Load daily count
     try:
         count_str  = r_get(KEY_DAILY_COUNT)
         date_str   = r_get(KEY_DAILY_DATE)
@@ -250,67 +442,91 @@ def load_all():
         )
         daily_count      = int(count_str) if count_str and saved_date == today else 0
         daily_reset_date = today
-    except Exception as e:
+    except (ValueError, TypeError) as e:
         logging.error(f"❌ Gagal load daily count: {e}")
         daily_count      = 0
         daily_reset_date = datetime.now(timezone.utc).date()
 
-    # Load flood controller state dari Redis
+    # Load flood controller
     try:
         flood_data = r_get_json(KEY_FLOOD_CTRL)
         if flood_data:
-            flood_ctrl = SmartFloodController()
-            # Validasi last_flood_time agar tidak error
-            if isinstance(flood_data.get("last_flood_time"), str):
-                try:
-                    flood_data["last_flood_time"] = datetime.fromisoformat(flood_data["last_flood_time"])
-                except Exception:
-                    flood_data["last_flood_time"] = None
-            flood_ctrl.__dict__.update(flood_data)
+            flood_ctrl = SmartFloodController.from_dict(flood_data)
             logging.info("🔄 Flood control state loaded dari Redis")
         else:
             flood_ctrl = SmartFloodController()
+            logging.info("✅ Flood control state baru dibuat")
     except Exception as e:
         logging.warning(f"⚠️ Gagal load flood control: {e}")
         flood_ctrl = SmartFloodController()
-    except Exception as e:
-        logging.warning(f"⚠️ Gagal load flood control: {e}")
-        flood_ctrl = SmartFloodController()
+
+    # Load daily limit dari Redis (jika ada)
+    try:
+        limit_str = r_get(KEY_DAILY_LIMIT)
+        if limit_str:
+            global DAILY_LIMIT
+            DAILY_LIMIT = int(limit_str)
+    except (ValueError, TypeError) as e:
+        logging.warning(f"⚠️ Gagal load daily limit: {e}")
+
+    # Load send delay
+    try:
+        delay_str = r_get(KEY_SEND_DELAY)
+        if delay_str:
+            global DELAY_BETWEEN_SEND
+            DELAY_BETWEEN_SEND = float(delay_str)
+    except (ValueError, TypeError) as e:
+        logging.warning(f"⚠️ Gagal load send delay: {e}")
 
     logging.info(
         f"📂 Data dimuat | Pending: {len(pending_media)} | "
-        f"Daily: {daily_count}/{DAILY_LIMIT}"
+        f"Daily: {daily_count}/{DAILY_LIMIT} | "
+        f"Flood: {flood_ctrl.get_status()}"
     )
 
-def save_pending():
+def save_pending() -> None:
     try:
         r_set(KEY_PENDING, json.dumps(pending_media))
     except Exception as e:
         logging.error(f"❌ Gagal save pending: {e}")
 
-def save_daily():
+def save_daily() -> None:
     try:
         r_set(KEY_DAILY_COUNT, str(daily_count))
         r_set(KEY_DAILY_DATE, str(daily_reset_date))
     except Exception as e:
         logging.error(f"❌ Gagal save daily: {e}")
 
-def save_flood_ctrl():
+def save_flood_ctrl() -> None:
     try:
         if flood_ctrl:
             r_set_json(KEY_FLOOD_CTRL, flood_ctrl.to_dict())
     except Exception as e:
         logging.error(f"❌ Gagal save flood ctrl: {e}")
 
-def save_all():
+def save_daily_limit() -> None:
+    try:
+        r_set(KEY_DAILY_LIMIT, str(DAILY_LIMIT))
+    except Exception as e:
+        logging.error(f"❌ Gagal save daily limit: {e}")
+
+def save_send_delay() -> None:
+    try:
+        r_set(KEY_SEND_DELAY, str(DELAY_BETWEEN_SEND))
+    except Exception as e:
+        logging.error(f"❌ Gagal save send delay: {e}")
+
+def save_all() -> None:
     save_pending()
     save_daily()
     save_flood_ctrl()
+    save_daily_limit()
+    save_send_delay()
 
 # ============================================================
 # === DUPLIKAT CHECK ===
 # ============================================================
-def get_fingerprint(msg):
+def get_fingerprint(msg) -> dict | None:
     if not msg.video:
         return None
     v = msg.video
@@ -324,7 +540,7 @@ def get_fingerprint(msg):
         'timestamp': datetime.now(timezone.utc).isoformat()
     }
 
-def is_duplicate(fingerprint):
+def is_duplicate(fingerprint: dict) -> bool:
     if not fingerprint:
         return False
 
@@ -356,7 +572,7 @@ def is_duplicate(fingerprint):
 
     return False
 
-def mark_sent(fingerprint):
+def mark_sent(fingerprint: dict) -> bool:
     if not fingerprint:
         return False
 
@@ -373,6 +589,9 @@ def mark_sent(fingerprint):
         # Fallback: mark locally
         local_sent.add(file_id)
         local_sent.add(fp_hash)
+        # Batasi ukuran local_sent
+        if len(local_sent) > MAX_LOCAL_SENT:
+            local_sent.pop()
         success = False
 
     return success
@@ -380,7 +599,7 @@ def mark_sent(fingerprint):
 # ============================================================
 # === DAILY RESET ===
 # ============================================================
-def check_daily_reset():
+def check_daily_reset() -> None:
     global daily_count, daily_reset_date
     today = datetime.now(timezone.utc).date()
     if today != daily_reset_date:
@@ -389,119 +608,9 @@ def check_daily_reset():
         daily_reset_date = today
 
 # ============================================================
-# === SMART FLOOD CONTROLLER ===
-# ============================================================
-class SmartFloodController:
-    __slots__ = (
-        'flood_count', 'total_flood', 'last_flood_time', 'penalty',
-        'is_cooling', 'group_delay_min', 'group_delay_max'
-    )
-
-    def __init__(self):
-        self.flood_count        = 0
-        self.total_flood        = 0
-        self.last_flood_time    = None
-        self.penalty            = 0
-        self.is_cooling         = False
-        self.group_delay_min    = DELAY_BETWEEN_GROUP_MIN
-        self.group_delay_max    = DELAY_BETWEEN_GROUP_MAX
-
-    def record_flood(self, suggested_wait: int) -> float:
-        now = datetime.now(timezone.utc)
-
-        if self.last_flood_time:
-            if isinstance(self.last_flood_time, str):
-                try:
-                    self.last_flood_time = datetime.fromisoformat(self.last_flood_time)
-                except Exception:
-                    self.last_flood_time = None
-
-            if self.last_flood_time:
-                elapsed = (now - self.last_flood_time).total_seconds()
-                if elapsed > FLOOD_RESET_AFTER:
-                    logging.info(
-                        f"🔄 Flood counter direset "
-                        f"(tidak ada flood selama {elapsed:.0f}s)"
-                    )
-                    self.flood_count = 0
-                    self.penalty     = 0
-
-        self.flood_count     += 1
-        self.total_flood     += 1
-        self.last_flood_time   = now
-        self.is_cooling         = True
-
-        self.penalty = min(FLOOD_MAX_PENALTY, self.flood_count * FLOOD_PENALTY_STEP)
-
-        random_add  = random.uniform(FLOOD_RANDOM_MIN, FLOOD_RANDOM_MAX)
-        total_wait  = suggested_wait + random_add + self.penalty
-
-        self.group_delay_min = min(120, DELAY_BETWEEN_GROUP_MIN + (self.flood_count * 5))
-        self.group_delay_max = min(180, DELAY_BETWEEN_GROUP_MAX + (self.flood_count * 10))
-
-        logging.warning(
-            f"🚨 FLOOD #{self.flood_count} terdeteksi!\n"
-            f"   ├─ Saran Telegram  : {suggested_wait}s\n"
-            f"   ├─ Random tambahan : {random_add:.1f}s\n"
-            f"   ├─ Penalti kumulatif: {self.penalty:.0f}s\n"
-            f"   ├─ Total tunggu    : {total_wait:.1f}s\n"
-            f"   └─ Delay group baru: {self.group_delay_min:.0f}s - {self.group_delay_max:.0f}s"
-        )
-
-        # Simpan state segera
-        self.save_state()
-        return total_wait
-
-    def record_success(self):
-        if self.penalty > 0:
-            self.penalty = max(0, self.penalty - 5)
-
-        if self.flood_count > 0:
-            self.flood_count = max(0, self.flood_count - 1)
-
-        if self.group_delay_min > DELAY_BETWEEN_GROUP_MIN:
-            self.group_delay_min = max(DELAY_BETWEEN_GROUP_MIN, self.group_delay_min - 2)
-        if self.group_delay_max > DELAY_BETWEEN_GROUP_MAX:
-            self.group_delay_max = max(DELAY_BETWEEN_GROUP_MAX, self.group_delay_max - 3)
-
-        self.is_cooling = False
-        self.save_state()
-
-    def get_group_delay(self) -> float:
-        return random.uniform(self.group_delay_min, self.group_delay_max)
-
-    def get_status(self) -> str:
-        return (
-            f"FloodCtrl | Count: {self.flood_count} | "
-            f"Total: {self.total_flood} | "
-            f"Penalty: {self.penalty:.0f}s | "
-            f"Delay: {self.group_delay_min:.0f}-{self.group_delay_max:.0f}s"
-        )
-
-    def to_dict(self):
-        return {
-            'flood_count': self.flood_count,
-            'total_flood': self.total_flood,
-            'last_flood_time': self.last_flood_time.isoformat() if self.last_flood_time else None,
-            'penalty': self.penalty,
-            'is_cooling': self.is_cooling,
-            'group_delay_min': self.group_delay_min,
-            'group_delay_max': self.group_delay_max
-        }
-
-    def save_state(self):
-        try:
-            r_set_json(KEY_FLOOD_CTRL, self.to_dict())
-        except Exception as e:
-            logging.error(f"❌ Gagal save flood ctrl state: {e}")
-
-# Inisialisasi global — akan di-override di load_all()
-flood_ctrl = SmartFloodController()
-
-# ============================================================
 # === KIRIM MEDIA GROUP ===
 # ============================================================
-async def send_media_group_with_retry(bot, chat_id, media_items, admin_chat_id=None, timeout=30):
+async def send_media_group_with_retry(bot, chat_id: int, media_items: list, admin_chat_id: int | None = None, timeout: int = 30) -> bool:
     global flood_ctrl
 
     for attempt in range(MAX_RETRIES):
@@ -528,13 +637,19 @@ async def send_media_group_with_retry(bot, chat_id, media_items, admin_chat_id=N
 
             if "Flood control" in err or "Too Many Requests" in err:
                 try:
-                    suggested = int(err.split("Retry in ")[-1].split(" "))
-                except Exception:
+                    # Extract retry time from error message
+                    # Format: "Flood control exceeded. Retry in 42 seconds."
+                    parts = err.split("Retry in ")
+                    if len(parts) > 1:
+                        suggested = int(parts.split())
+                    else:
+                        suggested = 60
+                except (ValueError, IndexError):
                     suggested = 60
 
                 total_wait = flood_ctrl.record_flood(suggested)
 
-                # Hanya kirim alert jika admin_chat_id valid
+                # Kirim alert jika flood count mencapai threshold dan admin_chat_id valid
                 if (
                     flood_ctrl.flood_count >= FLOOD_WARN_THRESHOLD
                     and admin_chat_id != 0
@@ -754,13 +869,13 @@ async def forward_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 # === ADMIN CONFIG ===
 # ============================================================
-def get_role(update: Update):
-    return ADMINS.get(update.effective_chat.id, None)
+def get_role(update: Update) -> str | None:
+    return ADMINS.get(update.effective_chat.id)
 
-def is_superadmin(update: Update):
+def is_superadmin(update: Update) -> bool:
     return get_role(update) == "superadmin"
 
-def is_moderator(update: Update):
+def is_moderator(update: Update) -> bool:
     return get_role(update) in ["moderator", "superadmin"]
 
 async def notify_admins(bot, text: str):
@@ -774,7 +889,9 @@ async def notify_admins(bot, text: str):
 # === ADMIN COMMANDS ===
 # ============================================================
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_moderator(update): return
+    if not is_moderator(update): 
+        await update.message.reply_text("❌ Anda bukan moderator/admin")
+        return
     total_sent = redis_client.scard(KEY_SENT) if redis_client else 0
     total_pending = len(pending_media)
     text = (
@@ -782,12 +899,15 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"├ Pending : {total_pending}\n"
         f"├ Sent    : {total_sent}\n"
         f"├ Daily   : {daily_count}/{DAILY_LIMIT}\n"
+        f"├ Delay   : {DELAY_BETWEEN_SEND:.1f}s\n"
         f"└ Flood   : {flood_ctrl.get_status() if flood_ctrl else 'N/A'}"
     )
     await update.message.reply_text(text)
 
 async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_moderator(update): return
+    if not is_moderator(update): 
+        await update.message.reply_text("❌ Anda bukan moderator/admin")
+        return
     global is_paused
     is_paused = True
     msg = f"⏸️ Worker dijeda oleh {update.effective_user.first_name}"
@@ -795,7 +915,9 @@ async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await notify_admins(update.get_bot(), msg)
 
 async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_moderator(update): return
+    if not is_moderator(update): 
+        await update.message.reply_text("❌ Anda bukan moderator/admin")
+        return
     global is_paused
     is_paused = False
     msg = f"▶️ Worker dilanjutkan oleh {update.effective_user.first_name}"
@@ -803,7 +925,9 @@ async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await notify_admins(update.get_bot(), msg)
 
 async def cmd_flushpending(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_superadmin(update): return
+    if not is_superadmin(update): 
+        await update.message.reply_text("❌ Hanya superadmin yang bisa menghapus pending")
+        return
     global pending_media
     pending_media.clear()
     save_pending()
@@ -812,7 +936,9 @@ async def cmd_flushpending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await notify_admins(update.get_bot(), msg)
 
 async def cmd_resetdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_superadmin(update): return
+    if not is_superadmin(update): 
+        await update.message.reply_text("❌ Hanya superadmin yang bisa reset daily")
+        return
     global daily_count, daily_reset_date
     daily_count = 0
     daily_reset_date = datetime.now(timezone.utc).date()
@@ -822,31 +948,45 @@ async def cmd_resetdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await notify_admins(update.get_bot(), msg)
 
 async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_superadmin(update): return
+    if not is_superadmin(update): 
+        await update.message.reply_text("❌ Hanya superadmin yang bisa mengubah limit")
+        return
     try:
         new_limit = int(context.args)
+        if not (1 <= new_limit <= 5000):
+            await update.message.reply_text("❌ Limit harus antara 1-5000")
+            return
         global DAILY_LIMIT
         DAILY_LIMIT = new_limit
+        save_daily_limit()  # Simpan ke Redis
         msg = f"⚙️ Daily limit diubah ke {DAILY_LIMIT} oleh {update.effective_user.first_name}"
         await update.message.reply_text(f"✅ {msg}")
         await notify_admins(update.get_bot(), msg)
-    except Exception:
+    except (IndexError, ValueError):
         await update.message.reply_text("❌ Format salah. Gunakan: /setlimit 1000")
 
 async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_superadmin(update): return
+    if not is_superadmin(update): 
+        await update.message.reply_text("❌ Hanya superadmin yang bisa mengubah delay")
+        return
     try:
         new_delay = float(context.args)
+        if not (0.1 <= new_delay <= 10.0):
+            await update.message.reply_text("❌ Delay harus antara 0.1-10.0 detik")
+            return
         global DELAY_BETWEEN_SEND
         DELAY_BETWEEN_SEND = new_delay
+        save_send_delay()  # Simpan ke Redis
         msg = f"⚙️ Delay antar video diubah ke {DELAY_BETWEEN_SEND:.1f}s oleh {update.effective_user.first_name}"
         await update.message.reply_text(f"✅ {msg}")
         await notify_admins(update.get_bot(), msg)
-    except Exception:
+    except (IndexError, ValueError):
         await update.message.reply_text("❌ Format salah. Gunakan: /setdelay 2.5")
 
 async def cmd_shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_superadmin(update): return
+    if not is_superadmin(update): 
+        await update.message.reply_text("❌ Hanya superadmin yang bisa mematikan bot")
+        return
     msg = f"🛑 Bot dimatikan oleh {update.effective_user.first_name}"
     await update.message.reply_text(msg)
     await notify_admins(update.get_bot(), msg)
@@ -861,6 +1001,7 @@ async def cmd_shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === STARTUP & SHUTDOWN ===
 # ============================================================
 async def on_startup(app):
+    connect_redis()
     load_all()
     asyncio.create_task(queue_worker(app.bot))
     logging.info("🚀 Bot siap!")
@@ -895,8 +1036,6 @@ def main():
     signal.signal(signal.SIGINT, handle_shutdown)
     signal.signal(signal.SIGTERM, handle_shutdown)
 
-    connect_redis()
-
     app = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
@@ -917,12 +1056,13 @@ def main():
     app.add_handler(CommandHandler("setdelay", cmd_setdelay))
     app.add_handler(CommandHandler("shutdown", cmd_shutdown))
 
-    logging.info("╔══════════════════════════════════╗")
-    logging.info("║ 🌸 HANAYA BOT v4.0 (Transaksi Aman) ║")
-    logging.info(f"║  Daily Limit : {DAILY_LIMIT} video/hari   ║")
-    logging.info(f"║  Group Size  : {GROUP_SIZE} video/kelompok  ║")
-    logging.info(f"║  Max Pending : {MAX_QUEUE_SIZE} video       ║")
-    logging.info("╚══════════════════════════════════╝")
+    logging.info("╔══════════════════════════════════════════════════════════╗")
+    logging.info("║ 🌸 HANAYA BOT v4.5 (Transaksi Aman & Stabil)              ║")
+    logging.info(f"║  Daily Limit : {DAILY_LIMIT} video/hari                    ║")
+    logging.info(f"║  Group Size  : {GROUP_SIZE} video/kelompok                 ║")
+    logging.info(f"║  Max Pending : {MAX_QUEUE_SIZE} video                      ║")
+    logging.info(f"║  Delay       : {DELAY_BETWEEN_SEND:.1f}s antar video        ║")
+    logging.info("╚══════════════════════════════════════════════════════════╝")
 
     app.run_polling(
         allowed_updates=Update.ALL_TYPES,
