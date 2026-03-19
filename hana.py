@@ -993,12 +993,12 @@ async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Hanya superadmin yang bisa mengubah limit")
         return
     try:
-        # ✅ Fix: cek apakah args ada dan tidak kosong
-        if not context.args or len(context.args) == 0:
+        # ✅ Cek args terlebih dahulu
+        if context.args is None or len(context.args) == 0:
             await update.message.reply_text("❌ Format salah. Gunakan: /setlimit 1000")
             return
         
-        new_limit = int(context.args)  # ✅ ambil elemen pertama
+        new_limit = int(context.args)
         if not (1 <= new_limit <= 5000):
             await update.message.reply_text("❌ Limit harus antara 1-5000")
             return
@@ -1008,21 +1008,22 @@ async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = f"⚙️ Daily limit diubah ke {DAILY_LIMIT} oleh {update.effective_user.first_name}"
         await update.message.reply_text(f"✅ {msg}")
         await notify_admins(context.bot, msg)
-    except (IndexError, ValueError, TypeError) as e:
+    except (ValueError, TypeError) as e:
         logging.error(f"❌ Error parsing setlimit: {e}")
         await update.message.reply_text("❌ Format salah. Gunakan: /setlimit 1000")
+
 
 async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_superadmin(update):
         await update.message.reply_text("❌ Hanya superadmin yang bisa mengubah delay")
         return
     try:
-        # ✅ Fix: cek apakah args ada dan tidak kosong
-        if not context.args or len(context.args) == 0:
+        # ✅ Cek args terlebih dahulu
+        if context.args is None or len(context.args) == 0:
             await update.message.reply_text("❌ Format salah. Gunakan: /setdelay 2.5")
             return
         
-        new_delay = float(context.args)  # ✅ ambil elemen pertama
+        new_delay = float(context.args)
         if not (0.1 <= new_delay <= 10.0):
             await update.message.reply_text("❌ Delay harus antara 0.1-10.0 detik")
             return
@@ -1032,7 +1033,7 @@ async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = f"⚙️ Delay diubah ke {DELAY_BETWEEN_SEND:.1f}s oleh {update.effective_user.first_name}"
         await update.message.reply_text(f"✅ {msg}")
         await notify_admins(context.bot, msg)
-    except (IndexError, ValueError, TypeError) as e:
+    except (ValueError, TypeError) as e:
         logging.error(f"❌ Error parsing setdelay: {e}")
         await update.message.reply_text("❌ Format salah. Gunakan: /setdelay 2.5")
 
