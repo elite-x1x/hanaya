@@ -138,6 +138,7 @@ is_paused:        bool        = False
 local_sent:       OrderedDict = OrderedDict()
 MAX_LOCAL_SENT                = 5000
 flood_ctrl                    = None
+config_lock                   = asyncio.Lock()  # ✅ Lock untuk variabel konfigurasi global
 
 # ============================================================
 # === REDIS CONNECTION ===
@@ -356,6 +357,8 @@ class SmartFloodController:
             self.penalty = max(0.0, self.penalty - 5.0)
         if self.flood_count > 0:
             self.flood_count = max(0, self.flood_count - 1)
+            if self.flood_count == 0:
+                self.last_flood_time = None  # ✅ Reset last_flood_time jika flood_count == 0
         if self.group_delay_min > DELAY_BETWEEN_GROUP_MIN:
             self.group_delay_min = max(
                 float(DELAY_BETWEEN_GROUP_MIN), self.group_delay_min - 2.0
@@ -425,7 +428,7 @@ def _local_sent_add(key: str) -> None:
         return
     local_sent[key] = True
     while len(local_sent) > MAX_LOCAL_SENT:
-        local_sent.popitem(last=False)  # ✅ hapus yang paling lama (FIFO)
+        local_sent.popitem(last=False)
 
 # ============================================================
 # === LOAD & SAVE ===
@@ -607,7 +610,7 @@ def mark_sent(fingerprint: dict) -> bool:
         logging.debug(f"✅ Marked sent: {file_id[:8]}...")
     except Exception as e:
         logging.error(f"❌ Gagal mark sent (Redis): {e}")
-        _local_sent_add(file_id)    # ✅ FIFO eviction
+        _local_sent_add(file_id)
         _local_sent_add(fp_hash)
         success = False
 
@@ -662,7 +665,7 @@ async def send_media_group_with_retry(
             err = str(e)
 
             if "Flood control" in err or "Too Many Requests" in err:
-                suggested  = parse_retry_after(err)  # ✅ fix parsing
+                suggested  = parse_retry_after(err)
                 total_wait = flood_ctrl.record_flood(suggested)
 
                 if (
@@ -716,7 +719,6 @@ async def send_media_group_with_retry(
             elif "invalid file" in err.lower() or "not found" in err.lower():
                 logging.warning(f"⚠️ File tidak valid, dilewati: {err[:100]}")
                 return False
-
             else:
                 base  = min(60, (2 ** attempt) * 5)
                 extra = random.uniform(5, 20)
@@ -740,6 +742,7 @@ async def send_media_group_with_retry(
 async def queue_worker(bot):
     global pending_media, is_sending, daily_count, last_save_time
 
+    logging.info("✅ Worker started")
     while True:
         await asyncio.sleep(WAIT_TIME)
 
@@ -775,8 +778,8 @@ async def queue_worker(bot):
                 save_pending()
                 logging.warning(f"⚠️ Pending overflow: removed {len(removed)} items")
 
-            batch = pending_media.copy()    # ✅ atomic copy
-            pending_media.clear()           # ✅ atomic clear
+            batch = pending_media.copy()
+            pending_media.clear()
             save_pending()
 
         total      = len(batch)
@@ -819,7 +822,9 @@ async def queue_worker(bot):
                         bot, TARGET_CHAT_ID, items, ADMIN_CHAT_ID
                     )
                     if success:
-                        daily_count += len(items)
+                        # ✅ Update daily_count dalam lock
+                        async with sending_lock:
+                            daily_count += len(items)
                         sent_count  += len(items)
                         save_daily()
                         for file_id, _, fp in group:
@@ -833,7 +838,9 @@ async def queue_worker(bot):
                             pending_media.extend(group)
                         save_pending()
 
-                delay = DELAY_BETWEEN_SEND + random.uniform(DELAY_RANDOM_MIN, DELAY_RANDOM_MAX)
+                # ✅ Baca DELAY_BETWEEN_SEND dengan lock
+                async with config_lock:
+                    delay = DELAY_BETWEEN_SEND + random.uniform(DELAY_RANDOM_MIN, DELAY_RANDOM_MAX)
                 await asyncio.sleep(delay)
 
                 if sent_count > 0 and sent_count % BATCH_PAUSE_EVERY == 0:
@@ -871,6 +878,8 @@ async def queue_worker(bot):
                 )
             except Exception as e:
                 logging.warning(f"⚠️ Gagal ambil stats akhir: {e}")
+
+    logging.info("✅ Worker stopped")
 
 # ============================================================
 # === HANDLER ===
@@ -911,7 +920,9 @@ async def forward_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def get_role(update: Update) -> str | None:
     if update.effective_user is None:
         return None
-    return ADMINS.get(update.effective_user.id)  # ✅ fix: user.id, bukan chat.id
+    role = ADMINS.get(update.effective_user.id)
+    logging.debug(f"User {update.effective_user.id} role: {role}")
+    return role
 
 def is_superadmin(update: Update) -> bool:
     return get_role(update) == "superadmin"
@@ -993,7 +1004,7 @@ def _flatten_arg(arg):
     while isinstance(arg, (list, tuple)):
         if len(arg) == 0:
             return None
-        arg = arg
+        arg = arg  # ✅ Ambil elemen pertama
     return str(arg).strip()
 
 async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1016,8 +1027,10 @@ async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Limit harus antara 1-5000")
             return
 
-        global DAILY_LIMIT
-        DAILY_LIMIT = new_limit
+        # ✅ Gunakan lock untuk update global variable
+        async with config_lock:
+            global DAILY_LIMIT
+            DAILY_LIMIT = new_limit
         save_daily_limit()
         msg = f"⚙️ Daily limit diubah ke {DAILY_LIMIT} oleh {update.effective_user.first_name}"
         await update.message.reply_text(f"✅ {msg}")
@@ -1047,8 +1060,10 @@ async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Delay harus antara 0.1-10.0 detik")
             return
 
-        global DELAY_BETWEEN_SEND
-        DELAY_BETWEEN_SEND = new_delay
+        # ✅ Gunakan lock untuk update global variable
+        async with config_lock:
+            global DELAY_BETWEEN_SEND
+            DELAY_BETWEEN_SEND = new_delay
         save_send_delay()
         msg = f"⚙️ Delay diubah ke {DELAY_BETWEEN_SEND:.1f}s oleh {update.effective_user.first_name}"
         await update.message.reply_text(f"✅ {msg}")
@@ -1066,8 +1081,9 @@ async def cmd_shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
     await notify_admins(context.bot, msg)
     save_all()
-    # ✅ Shutdown graceful via signal
-    os.kill(os.getpid(), signal.SIGTERM)
+    # ✅ Shutdown graceful via Application
+    await context.application.stop()  # ✅ Gunakan ini, bukan os.kill
+    logging.info("✅ Bot berhenti dengan aman")
 
 # ============================================================
 # === STARTUP & SHUTDOWN ===
