@@ -722,9 +722,9 @@ def handle_shutdown(signum, frame):
     save_all()
     logging.info("✅ Data tersimpan, bot berhenti")
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         loop.stop()
-    except Exception:
+    except RuntimeError:
         sys.exit(0)
 
 # ============================================================
