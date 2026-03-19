@@ -988,6 +988,14 @@ async def cmd_resetdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
     await notify_admins(context.bot, msg)
 
+def _flatten_arg(arg):
+    """Flatten nested list menjadi string."""
+    while isinstance(arg, (list, tuple)):
+        if len(arg) == 0:
+            return None
+        arg = arg
+    return str(arg).strip()
+
 async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_superadmin(update):
         await update.message.reply_text("❌ Hanya superadmin yang bisa mengubah limit")
@@ -997,17 +1005,13 @@ async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Format salah. Gunakan: /setlimit 1000")
             return
 
-        arg = context.args
-        # ✅ Handle semua tipe: str, int, float, list
-        if isinstance(arg, list):
-            arg = arg  # ambil elemen pertama
-        elif isinstance(arg, (int, float)):
-            arg = str(arg)  # konversi ke string
-        elif not isinstance(arg, str):
-            await update.message.reply_text("❌ Argumen harus berupa angka (contoh: 1500)")
+        # ✅ Flatten nested list
+        arg_str = _flatten_arg(context.args)
+        if arg_str is None:
+            await update.message.reply_text("❌ Format salah. Gunakan: /setlimit 1000")
             return
-
-        new_limit = int(arg)
+        
+        new_limit = int(arg_str)
         if not (1 <= new_limit <= 5000):
             await update.message.reply_text("❌ Limit harus antara 1-5000")
             return
@@ -1032,17 +1036,13 @@ async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Format salah. Gunakan: /setdelay 2.5")
             return
 
-        arg = context.args
-        # ✅ Handle semua tipe: str, int, float, list
-        if isinstance(arg, list):
-            arg = arg  # ambil elemen pertama
-        elif isinstance(arg, (int, float)):
-            arg = str(arg)  # konversi ke string
-        elif not isinstance(arg, str):
-            await update.message.reply_text("❌ Argumen harus berupa angka desimal (contoh: 2.5)")
+        # ✅ Flatten nested list
+        arg_str = _flatten_arg(context.args)
+        if arg_str is None:
+            await update.message.reply_text("❌ Format salah. Gunakan: /setdelay 2.5")
             return
-
-        new_delay = float(arg)
+        
+        new_delay = float(arg_str)
         if not (0.1 <= new_delay <= 10.0):
             await update.message.reply_text("❌ Delay harus antara 0.1-10.0 detik")
             return
