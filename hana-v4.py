@@ -905,27 +905,27 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_moderator(update): 
+    if not is_moderator(update):
         await update.message.reply_text("❌ Anda bukan moderator/admin")
         return
     global is_paused
     is_paused = True
     msg = f"⏸️ Worker dijeda oleh {update.effective_user.first_name}"
     await update.message.reply_text(msg)
-    await notify_admins(update.get_bot(), msg)
+    await notify_admins(context.bot, msg)  # ✅ fix
 
 async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_moderator(update): 
+    if not is_moderator(update):
         await update.message.reply_text("❌ Anda bukan moderator/admin")
         return
     global is_paused
     is_paused = False
     msg = f"▶️ Worker dilanjutkan oleh {update.effective_user.first_name}"
     await update.message.reply_text(msg)
-    await notify_admins(update.get_bot(), msg)
+    await notify_admins(context.bot, msg)  # ✅ fix
 
 async def cmd_flushpending(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_superadmin(update): 
+    if not is_superadmin(update):
         await update.message.reply_text("❌ Hanya superadmin yang bisa menghapus pending")
         return
     global pending_media
@@ -933,10 +933,10 @@ async def cmd_flushpending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_pending()
     msg = f"🗑️ Pending queue dikosongkan oleh {update.effective_user.first_name}"
     await update.message.reply_text(msg)
-    await notify_admins(update.get_bot(), msg)
+    await notify_admins(context.bot, msg)  # ✅ fix
 
 async def cmd_resetdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_superadmin(update): 
+    if not is_superadmin(update):
         await update.message.reply_text("❌ Hanya superadmin yang bisa reset daily")
         return
     global daily_count, daily_reset_date
@@ -945,51 +945,51 @@ async def cmd_resetdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_daily()
     msg = f"🔄 Daily counter direset oleh {update.effective_user.first_name}"
     await update.message.reply_text(msg)
-    await notify_admins(update.get_bot(), msg)
+    await notify_admins(context.bot, msg)  # ✅ fix
 
 async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_superadmin(update): 
+    if not is_superadmin(update):
         await update.message.reply_text("❌ Hanya superadmin yang bisa mengubah limit")
         return
     try:
-        new_limit = int(context.args)
+        new_limit = int(context.args)  # ✅ fix: ambil index 
         if not (1 <= new_limit <= 5000):
             await update.message.reply_text("❌ Limit harus antara 1-5000")
             return
         global DAILY_LIMIT
         DAILY_LIMIT = new_limit
-        save_daily_limit()  # Simpan ke Redis
+        save_daily_limit()
         msg = f"⚙️ Daily limit diubah ke {DAILY_LIMIT} oleh {update.effective_user.first_name}"
         await update.message.reply_text(f"✅ {msg}")
-        await notify_admins(update.get_bot(), msg)
+        await notify_admins(context.bot, msg)  # ✅ fix
     except (IndexError, ValueError):
         await update.message.reply_text("❌ Format salah. Gunakan: /setlimit 1000")
 
 async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_superadmin(update): 
+    if not is_superadmin(update):
         await update.message.reply_text("❌ Hanya superadmin yang bisa mengubah delay")
         return
     try:
-        new_delay = float(context.args)
+        new_delay = float(context.args)  # ✅ fix: ambil index 
         if not (0.1 <= new_delay <= 10.0):
             await update.message.reply_text("❌ Delay harus antara 0.1-10.0 detik")
             return
         global DELAY_BETWEEN_SEND
         DELAY_BETWEEN_SEND = new_delay
-        save_send_delay()  # Simpan ke Redis
-        msg = f"⚙️ Delay antar video diubah ke {DELAY_BETWEEN_SEND:.1f}s oleh {update.effective_user.first_name}"
+        save_send_delay()
+        msg = f"⚙️ Delay diubah ke {DELAY_BETWEEN_SEND:.1f}s oleh {update.effective_user.first_name}"
         await update.message.reply_text(f"✅ {msg}")
-        await notify_admins(update.get_bot(), msg)
+        await notify_admins(context.bot, msg)  # ✅ fix
     except (IndexError, ValueError):
         await update.message.reply_text("❌ Format salah. Gunakan: /setdelay 2.5")
 
 async def cmd_shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_superadmin(update): 
+    if not is_superadmin(update):
         await update.message.reply_text("❌ Hanya superadmin yang bisa mematikan bot")
         return
     msg = f"🛑 Bot dimatikan oleh {update.effective_user.first_name}"
     await update.message.reply_text(msg)
-    await notify_admins(update.get_bot(), msg)
+    await notify_admins(context.bot, msg)  # ✅ fix
     save_all()
     try:
         loop = asyncio.get_running_loop()
