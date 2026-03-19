@@ -754,17 +754,22 @@ async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === MAIN ENTRY POINT ===
 # ============================================================
 def main():
-    # Pastikan Redis terhubung
+    signal.signal(signal.SIGINT, handle_shutdown)
+    signal.signal(signal.SIGTERM, handle_shutdown)
+
     connect_redis()
-    load_all()
 
-    # Buat aplikasi Telegram
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .post_init(on_startup)
+        .post_shutdown(on_shutdown)
+        .build()
+    )
 
-    # Handler untuk video masuk
+    app.add_error_handler(error_handler)
     app.add_handler(MessageHandler(filters.VIDEO, forward_media))
 
-    # Admin commands
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("pause", cmd_pause))
     app.add_handler(CommandHandler("resume", cmd_resume))
@@ -772,15 +777,19 @@ def main():
     app.add_handler(CommandHandler("resetdaily", cmd_resetdaily))
     app.add_handler(CommandHandler("setlimit", cmd_setlimit))
     app.add_handler(CommandHandler("setdelay", cmd_setdelay))
+    app.add_handler(CommandHandler("shutdown", cmd_shutdown))
 
-    # Jalankan worker background
-    async def run_worker():
-        await queue_worker(app.bot)
+    logging.info("╔══════════════════════════════════╗")
+    logging.info("║ 🌸 HANAYA BOT v4.0 (Transaksi Aman) ║")
+    logging.info(f"║  Daily Limit : {DAILY_LIMIT} video/hari   ║")
+    logging.info(f"║  Group Size  : {GROUP_SIZE} video/kelompok  ║")
+    logging.info(f"║  Max Pending : {MAX_QUEUE_SIZE} video       ║")
+    logging.info("╚══════════════════════════════════╝")
 
-    app.job_queue.run_once(lambda _: asyncio.create_task(run_worker()), when=0)
-
-    logging.info("🚀 Bot mulai berjalan...")
-    app.run_polling()
+    app.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True
+    )
 
 if __name__ == "__main__":
     main()
