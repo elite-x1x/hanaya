@@ -997,10 +997,9 @@ async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Format salah. Gunakan: /setlimit 1000")
             return
 
-        # ✅ Validasi tipe: pastikan argumen pertama adalah string
         arg = context.args
         if not isinstance(arg, str):
-            await update.message.reply_text("❌ Argumen harus berupa angka (string)")
+            await update.message.reply_text("❌ Argumen harus berupa angka (contoh: 1500)")
             return
 
         new_limit = int(arg)
@@ -1019,6 +1018,7 @@ async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"❌ Error parsing setlimit: {e}")
         await update.message.reply_text("❌ Format salah. Gunakan: /setlimit 1000")
 
+
 async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_superadmin(update):
         await update.message.reply_text("❌ Hanya superadmin yang bisa mengubah delay")
@@ -1028,10 +1028,9 @@ async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Format salah. Gunakan: /setdelay 2.5")
             return
 
-        # ✅ Validasi tipe: pastikan argumen pertama adalah string
         arg = context.args
         if not isinstance(arg, str):
-            await update.message.reply_text("❌ Argumen harus berupa angka (string)")
+            await update.message.reply_text("❌ Argumen harus berupa angka desimal (contoh: 2.5)")
             return
 
         new_delay = float(arg)
