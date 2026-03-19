@@ -988,7 +988,35 @@ async def cmd_resetdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
     await notify_admins(context.bot, msg)
 
+async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_superadmin(update):
+        await update.message.reply_text("❌ Hanya superadmin yang bisa mengubah limit")
+        return
+    try:
+        if not context.args or len(context.args) == 0:
+            await update.message.reply_text("❌ Format salah. Gunakan: /setlimit 1000")
+            return
 
+        arg = context.args
+        if not isinstance(arg, str):
+            await update.message.reply_text("❌ Argumen harus berupa angka (contoh: 1500)")
+            return
+
+        new_limit = int(arg)
+        if not (1 <= new_limit <= 5000):
+            await update.message.reply_text("❌ Limit harus antara 1-5000")
+            return
+
+        global DAILY_LIMIT
+        DAILY_LIMIT = new_limit
+        save_daily_limit()
+        msg = f"⚙️ Daily limit diubah ke {DAILY_LIMIT} oleh {update.effective_user.first_name}"
+        await update.message.reply_text(f"✅ {msg}")
+        await notify_admins(context.bot, msg)
+
+    except (ValueError, TypeError) as e:
+        logging.error(f"❌ Error parsing setlimit: {e}")
+        await update.message.reply_text("❌ Format salah. Gunakan: /setlimit 1000")
 
 async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_superadmin(update):
