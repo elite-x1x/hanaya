@@ -5,10 +5,10 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, CommandHandler
 
 # Import modul internal
-from hanaya_bot.config import BOT_TOKEN, DAILY_LIMIT, GROUP_SIZE, MAX_QUEUE_SIZE
-from hanaya_bot.redis_helpers import connect_redis
-from hanaya_bot.worker import forward_media, queue_worker
-from hanaya_bot.admin import (
+from .config import BOT_TOKEN, DAILY_LIMIT, GROUP_SIZE, MAX_QUEUE_SIZE
+from .redis_helpers import connect_redis
+from .worker import forward_media, queue_worker
+from .admin import (
     cmd_status, cmd_pause, cmd_resume,
     cmd_flushpending, cmd_resetdaily,
     cmd_setlimit, cmd_setdelay
