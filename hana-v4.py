@@ -751,25 +751,96 @@ async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Format salah. Gunakan: /setdelay 2.5")
 
 # ============================================================
+# === LOAD & SAVE STATE ===
+# ============================================================
+def load_all():
+    global pending_media, daily_count, daily_reset_date, flood_ctrl
+
+    try:
+        raw = r_get(KEY_PENDING)
+        pending_media = json.loads(raw) if raw else []
+    except Exception as e:
+        logging.error(f"❌ Gagal load pending: {e}")
+        pending_media = []
+
+    try:
+        count_str  = r_get(KEY_DAILY_COUNT)
+        date_str   = r_get(KEY_DAILY_DATE)
+        today      = datetime.now(timezone.utc).date()
+        saved_date = (
+            datetime.strptime(date_str, "%Y-%m-%d").date()
+            if date_str else today
+        )
+        daily_count      = int(count_str) if count_str and saved_date == today else 0
+        daily_reset_date = today
+    except Exception as e:
+        logging.error(f"❌ Gagal load daily count: {e}")
+        daily_count      = 0
+        daily_reset_date = datetime.now(timezone.utc).date()
+
+    # Load flood controller state dari Redis
+    try:
+        flood_data = r_get_json(KEY_FLOOD_CTRL)
+        if flood_data:
+            flood_ctrl = SmartFloodController()
+            if isinstance(flood_data.get("last_flood_time"), str):
+                try:
+                    flood_data["last_flood_time"] = datetime.fromisoformat(flood_data["last_flood_time"])
+                except Exception:
+                    flood_data["last_flood_time"] = None
+            flood_ctrl.__dict__.update(flood_data)
+            logging.info("🔄 Flood control state loaded dari Redis")
+        else:
+            flood_ctrl = SmartFloodController()
+    except Exception as e:
+        logging.warning(f"⚠️ Gagal load flood control: {e}")
+        flood_ctrl = SmartFloodController()
+
+    logging.info(
+        f"📂 Data dimuat | Pending: {len(pending_media)} | "
+        f"Daily: {daily_count}/{DAILY_LIMIT}"
+    )
+
+def save_pending():
+    try:
+        r_set(KEY_PENDING, json.dumps(pending_media))
+    except Exception as e:
+        logging.error(f"❌ Gagal save pending: {e}")
+
+def save_daily():
+    try:
+        r_set(KEY_DAILY_COUNT, str(daily_count))
+        r_set(KEY_DAILY_DATE, str(daily_reset_date))
+    except Exception as e:
+        logging.error(f"❌ Gagal save daily: {e}")
+
+def save_flood_ctrl():
+    try:
+        if flood_ctrl:
+            r_set_json(KEY_FLOOD_CTRL, flood_ctrl.__dict__)
+    except Exception as e:
+        logging.error(f"❌ Gagal save flood ctrl: {e}")
+
+def save_all():
+    save_pending()
+    save_daily()
+    save_flood_ctrl()
+
+# ============================================================
 # === MAIN ENTRY POINT ===
 # ============================================================
 def main():
-    signal.signal(signal.SIGINT, handle_shutdown)
-    signal.signal(signal.SIGTERM, handle_shutdown)
-
+    # Pastikan Redis terhubung
     connect_redis()
+    load_all()
 
-    app = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .post_init(on_startup)
-        .post_shutdown(on_shutdown)
-        .build()
-    )
+    # Buat aplikasi Telegram
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    app.add_error_handler(error_handler)
+    # Handler untuk video masuk
     app.add_handler(MessageHandler(filters.VIDEO, forward_media))
 
+    # Admin commands
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("pause", cmd_pause))
     app.add_handler(CommandHandler("resume", cmd_resume))
@@ -777,19 +848,16 @@ def main():
     app.add_handler(CommandHandler("resetdaily", cmd_resetdaily))
     app.add_handler(CommandHandler("setlimit", cmd_setlimit))
     app.add_handler(CommandHandler("setdelay", cmd_setdelay))
-    app.add_handler(CommandHandler("shutdown", cmd_shutdown))
 
-    logging.info("╔══════════════════════════════════╗")
-    logging.info("║ 🌸 HANAYA BOT v4.0 (Transaksi Aman) ║")
-    logging.info(f"║  Daily Limit : {DAILY_LIMIT} video/hari   ║")
-    logging.info(f"║  Group Size  : {GROUP_SIZE} video/kelompok  ║")
-    logging.info(f"║  Max Pending : {MAX_QUEUE_SIZE} video       ║")
-    logging.info("╚══════════════════════════════════╝")
+    # Jalankan worker background
+    async def run_worker():
+        await queue_worker(app.bot)
 
-    app.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True
-    )
+    app.job_queue.run_once(lambda _: asyncio.create_task(run_worker()), when=0)
+
+    logging.info("🚀 Bot mulai berjalan...")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
+
