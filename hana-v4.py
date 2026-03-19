@@ -1,6 +1,3 @@
-# ============================================================
-# === KONFIGURASI & SETUP UTAMA === BAG 1
-# ============================================================
 import logging
 import json
 import os
@@ -16,11 +13,11 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filte
 from dotenv import load_dotenv
 import redis
 
-# ============================================================
-# === LOAD ENVIRONMENT ===
-# ============================================================
 load_dotenv()
 
+# ============================================================
+# === KONFIGURASI UTAMA ===
+# ============================================================
 BOT_TOKEN      = os.getenv("BOT_F_LOKAL", "xxxx")
 TARGET_CHAT_ID = int(os.getenv("CHAT_ID_BEDUL", 1234))
 ADMIN_CHAT_ID  = int(os.getenv("CHAT_ID_ADMIN", 5678))
@@ -35,16 +32,11 @@ if ADMIN_CHAT_ID == 0:
 # ============================================================
 # === ADMIN CONFIG ===
 # ============================================================
-SUPERADMINS = os.getenv("SUPERADMINS", "").split(",")
-MODERATORS  = os.getenv("MODERATORS", "").split(",")
-
-ADMINS = {}
-for uid in SUPERADMINS:
-    if uid.strip():
-        ADMINS[int(uid.strip())] = "superadmin"
-for uid in MODERATORS:
-    if uid.strip():
-        ADMINS[int(uid.strip())] = "moderator"
+ADMINS = {
+    1234: "superadmin",   # ganti dengan ID Telegram superadmin
+    5678: "moderator",    # contoh moderator
+    9999: "moderator"     # bisa tambah banyak
+}
 
 # ============================================================
 # === REDIS CONFIG ===
@@ -56,9 +48,9 @@ REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "token_hanaya")
 # ============================================================
 # === REDIS KEYS ===
 # ============================================================
-KEY_SENT        = "hanaya:sent"
-KEY_PENDING     = "hanaya:pending"
-KEY_FAILED      = "hanaya:failed"
+KEY_SENT       = "hanaya:sent"
+KEY_PENDING    = "hanaya:pending"
+KEY_FAILED     = "hanaya:failed"
 KEY_DAILY_COUNT = "hanaya:daily_count"
 KEY_DAILY_DATE  = "hanaya:daily_date"
 KEY_FLOOD_CTRL  = "hanaya:flood_ctrl"
@@ -119,17 +111,16 @@ daily_count      = 0
 daily_reset_date = datetime.now(timezone.utc).date()
 last_save_time   = datetime.now(timezone.utc)
 sending_lock     = asyncio.Lock()
-flood_ctrl       = None  # akan diinisialisasi di load_all()
-is_paused        = False # flag untuk pause/resume
-local_sent       = set() # fallback jika Redis down
+flood_ctrl       = None  # ← diinisialisasi di load_all()
+is_paused        = False  # ← diinisialisasi di sini
+local_sent       = set()  # ← fallback jika Redis down
 
 # ============================================================
-# === REDIS CONNECTION === BAG 2
+# === REDIS CONNECTION ===
 # ============================================================
 redis_client = None
 
 def connect_redis():
-    """Coba koneksi ke Redis dengan retry hingga 5 kali."""
     global redis_client
     for attempt in range(5):
         try:
@@ -152,7 +143,6 @@ def connect_redis():
     redis_client = None
 
 def ensure_redis():
-    """Pastikan koneksi Redis masih hidup, jika tidak coba reconnect."""
     global redis_client
     if redis_client is None:
         logging.warning("⚠️ Redis tidak tersedia, skip reconnect")
@@ -167,71 +157,161 @@ def ensure_redis():
 # === REDIS HELPERS ===
 # ============================================================
 def r_get(key):
+    if redis_client is None:
+        return None
     try:
         ensure_redis()
-        return redis_client.get(key) if redis_client else None
+        return redis_client.get(key)
     except Exception as e:
         logging.error(f"Redis GET error [{key}]: {e}")
         return None
 
 def r_set(key, value):
+    if redis_client is None:
+        return
     try:
         ensure_redis()
-        if redis_client:
-            redis_client.set(key, value)
+        redis_client.set(key, value)
     except Exception as e:
         logging.error(f"Redis SET error [{key}]: {e}")
 
 def r_sismember(key, value):
+    if redis_client is None:
+        return False
     try:
         ensure_redis()
-        return redis_client.sismember(key, value) if redis_client else False
+        return redis_client.sismember(key, value)
     except Exception as e:
         logging.error(f"Redis SISMEMBER error [{key}]: {e}")
         return False
 
 def r_sadd_with_ttl(key, value, ttl):
+    if redis_client is None:
+        return
     try:
         ensure_redis()
-        if redis_client:
-            pipe = redis_client.pipeline()
-            pipe.sadd(key, value)
-            pipe.expire(key, ttl)
-            pipe.execute()
+        pipe = redis_client.pipeline()
+        pipe.sadd(key, value)
+        pipe.expire(key, ttl)
+        pipe.execute()
     except Exception as e:
         logging.error(f"Redis SADD+TTL error [{key}]: {e}")
 
 def r_set_json(key, data):
+    if redis_client is None:
+        return
     try:
         ensure_redis()
-        if redis_client:
-            redis_client.set(key, json.dumps(data))
+        redis_client.set(key, json.dumps(data))
     except Exception as e:
         logging.error(f"Redis SET JSON error [{key}]: {e}")
 
 def r_get_json(key):
+    if redis_client is None:
+        return None
     try:
         ensure_redis()
-        if redis_client:
-            data = redis_client.get(key)
-            if data:
-                return json.loads(data)
+        data = redis_client.get(key)
+        if data:
+            return json.loads(data)
     except Exception as e:
         logging.error(f"Redis GET JSON error [{key}]: {e}")
     return None
 
 # ============================================================
-# === DUPLIKAT CHECK & FINGERPRINT === BAG 3
+# === MAKE HASH ===
 # ============================================================
 def make_hash(fingerprint):
-    """Buat hash unik dari fingerprint video (tanpa file_id)."""
     fp_copy = {k: v for k, v in fingerprint.items() if k != 'file_id'}
     return hashlib.md5(
         json.dumps(fp_copy, sort_keys=True).encode()
     ).hexdigest()
 
+# ============================================================
+# === LOAD & SAVE ===
+# ============================================================
+def load_all():
+    global pending_media, daily_count, daily_reset_date, flood_ctrl
+
+    try:
+        raw = r_get(KEY_PENDING)
+        pending_media = json.loads(raw) if raw else []
+    except Exception as e:
+        logging.error(f"❌ Gagal load pending: {e}")
+        pending_media = []
+
+    try:
+        count_str  = r_get(KEY_DAILY_COUNT)
+        date_str   = r_get(KEY_DAILY_DATE)
+        today      = datetime.now(timezone.utc).date()
+        saved_date = (
+            datetime.strptime(date_str, "%Y-%m-%d").date()
+            if date_str else today
+        )
+        daily_count      = int(count_str) if count_str and saved_date == today else 0
+        daily_reset_date = today
+    except Exception as e:
+        logging.error(f"❌ Gagal load daily count: {e}")
+        daily_count      = 0
+        daily_reset_date = datetime.now(timezone.utc).date()
+
+    # Load flood controller state dari Redis
+    try:
+        flood_data = r_get_json(KEY_FLOOD_CTRL)
+        if flood_data:
+            flood_ctrl = SmartFloodController()
+            # Validasi last_flood_time agar tidak error
+            if isinstance(flood_data.get("last_flood_time"), str):
+                try:
+                    flood_data["last_flood_time"] = datetime.fromisoformat(flood_data["last_flood_time"])
+                except Exception:
+                    flood_data["last_flood_time"] = None
+            flood_ctrl.__dict__.update(flood_data)
+            logging.info("🔄 Flood control state loaded dari Redis")
+        else:
+            flood_ctrl = SmartFloodController()
+    except Exception as e:
+        logging.warning(f"⚠️ Gagal load flood control: {e}")
+        flood_ctrl = SmartFlood```python
+        flood_ctrl = SmartFloodController()
+    except Exception as e:
+        logging.warning(f"⚠️ Gagal load flood control: {e}")
+        flood_ctrl = SmartFloodController()
+
+    logging.info(
+        f"📂 Data dimuat | Pending: {len(pending_media)} | "
+        f"Daily: {daily_count}/{DAILY_LIMIT}"
+    )
+
+def save_pending():
+    try:
+        r_set(KEY_PENDING, json.dumps(pending_media))
+    except Exception as e:
+        logging.error(f"❌ Gagal save pending: {e}")
+
+def save_daily():
+    try:
+        r_set(KEY_DAILY_COUNT, str(daily_count))
+        r_set(KEY_DAILY_DATE, str(daily_reset_date))
+    except Exception as e:
+        logging.error(f"❌ Gagal save daily: {e}")
+
+def save_flood_ctrl():
+    try:
+        if flood_ctrl:
+            r_set_json(KEY_FLOOD_CTRL, flood_ctrl.to_dict())
+    except Exception as e:
+        logging.error(f"❌ Gagal save flood ctrl: {e}")
+
+def save_all():
+    save_pending()
+    save_daily()
+    save_flood_ctrl()
+
+# ============================================================
+# === DUPLIKAT CHECK ===
+# ============================================================
 def get_fingerprint(msg):
-    """Ambil fingerprint dari pesan video Telegram."""
     if not msg.video:
         return None
     v = msg.video
@@ -246,7 +326,6 @@ def get_fingerprint(msg):
     }
 
 def is_duplicate(fingerprint):
-    """Cek apakah video sudah pernah dikirim (Redis, lokal, atau pending)."""
     if not fingerprint:
         return False
 
@@ -279,7 +358,6 @@ def is_duplicate(fingerprint):
     return False
 
 def mark_sent(fingerprint):
-    """Tandai video sebagai terkirim di Redis (atau fallback lokal)."""
     if not fingerprint:
         return False
 
@@ -301,9 +379,25 @@ def mark_sent(fingerprint):
     return success
 
 # ============================================================
+# === DAILY RESET ===
+# ============================================================
+def check_daily_reset():
+    global daily_count, daily_reset_date
+    today = datetime.now(timezone.utc).date()
+    if today != daily_reset_date:
+        logging.info(f"🔄 Reset harian | Kemarin terkirim: {daily_count}")
+        daily_count      = 0
+        daily_reset_date = today
+
+# ============================================================
 # === SMART FLOOD CONTROLLER ===
 # ============================================================
 class SmartFloodController:
+    __slots__ = (
+        'flood_count', 'total_flood', 'last_flood_time', 'penalty',
+        'is_cooling', 'group_delay_min', 'group_delay_max'
+    )
+
     def __init__(self):
         self.flood_count        = 0
         self.total_flood        = 0
@@ -314,7 +408,6 @@ class SmartFloodController:
         self.group_delay_max    = DELAY_BETWEEN_GROUP_MAX
 
     def record_flood(self, suggested_wait: int) -> float:
-        """Catat flood event dan hitung total waktu tunggu."""
         now = datetime.now(timezone.utc)
 
         if self.last_flood_time:
@@ -356,11 +449,11 @@ class SmartFloodController:
             f"   └─ Delay group baru: {self.group_delay_min:.0f}s - {self.group_delay_max:.0f}s"
         )
 
+        # Simpan state segera
         self.save_state()
         return total_wait
 
     def record_success(self):
-        """Kurangi penalti jika berhasil kirim tanpa flood."""
         if self.penalty > 0:
             self.penalty = max(0, self.penalty - 5)
 
@@ -407,7 +500,7 @@ class SmartFloodController:
 flood_ctrl = SmartFloodController()
 
 # ============================================================
-# === KIRIM MEDIA GROUP DENGAN RETRY === BAG 4
+# === KIRIM MEDIA GROUP ===
 # ============================================================
 async def send_media_group_with_retry(bot, chat_id, media_items, admin_chat_id=None, timeout=30):
     global flood_ctrl
@@ -436,14 +529,17 @@ async def send_media_group_with_retry(bot, chat_id, media_items, admin_chat_id=N
 
             if "Flood control" in err or "Too Many Requests" in err:
                 try:
-                    suggested = int(err.split("Retry in ")[-1].split(" ")[0])
+                    suggested = int(err.split("Retry in ")[-1].split(" "))
                 except Exception:
                     suggested = 60
 
                 total_wait = flood_ctrl.record_flood(suggested)
 
-                # Kirim alert ke admin jika flood berulang
-                if flood_ctrl.flood_count >= FLOOD_WARN_THRESHOLD and admin_chat_id != 0:
+                # Hanya kirim alert jika admin_chat_id valid
+                if (
+                    flood_ctrl.flood_count >= FLOOD_WARN_THRESHOLD
+                    and admin_chat_id != 0
+                ):
                     try:
                         await bot.send_message(
                             chat_id=admin_chat_id,
@@ -625,7 +721,7 @@ async def queue_worker(bot):
             )
 
 # ============================================================
-# === HANDLER UNTUK VIDEO MASUK === BAG 5
+# === HANDLER ===
 # ============================================================
 async def forward_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -638,7 +734,7 @@ async def forward_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_duplicate(fp):
         logging.info(
-            f"❌ Duplikat: {fp['file_id'][:8]}... | {fp['width']}x{fp['height']} | {fp['duration']}s"
+            f"❌ Duplikat: {fp['file_id'] [:8]}... | {fp['width']}x{fp['height']} | {fp['duration']}s"
         )
         return
 
@@ -653,7 +749,7 @@ async def forward_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Notifikasi total
     total_pending = len(pending_media)
-    total_sent = redis_client.scard(KEY_SENT) if redis_client else len(local_sent)
+    total_sent = redis_client.scard(KEY_SENT) if redis_client else 0
     logging.info(f"📊 Total: Terkirim={total_sent} | Pending={total_pending} | Failed=0")
 
 # ============================================================
@@ -680,7 +776,7 @@ async def notify_admins(bot, text: str):
 # ============================================================
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_moderator(update): return
-    total_sent = redis_client.scard(KEY_SENT) if redis_client else len(local_sent)
+    total_sent = redis_client.scard(KEY_SENT) if redis_client else 0
     total_pending = len(pending_media)
     text = (
         f"📊 STATUS BOT\n"
@@ -729,7 +825,7 @@ async def cmd_resetdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_superadmin(update): return
     try:
-        new_limit = int(context.args[0])
+        new_limit = int(context.args)
         global DAILY_LIMIT
         DAILY_LIMIT = new_limit
         msg = f"⚙️ Daily limit diubah ke {DAILY_LIMIT} oleh {update.effective_user.first_name}"
@@ -741,7 +837,7 @@ async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_superadmin(update): return
     try:
-        new_delay = float(context.args[0])
+        new_delay = float(context.args)
         global DELAY_BETWEEN_SEND
         DELAY_BETWEEN_SEND = new_delay
         msg = f"⚙️ Delay antar video diubah ke {DELAY_BETWEEN_SEND:.1f}s oleh {update.effective_user.first_name}"
@@ -750,97 +846,69 @@ async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await update.message.reply_text("❌ Format salah. Gunakan: /setdelay 2.5")
 
-# ============================================================
-# === LOAD & SAVE STATE ===
-# ============================================================
-def load_all():
-    global pending_media, daily_count, daily_reset_date, flood_ctrl
-
+async def cmd_shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_superadmin(update): return
+    msg = f"🛑 Bot dimatikan oleh {update.effective_user.first_name}"
+    await update.message.reply_text(msg)
+    await notify_admins(update.get_bot(), msg)
+    save_all()
     try:
-        raw = r_get(KEY_PENDING)
-        pending_media = json.loads(raw) if raw else []
-    except Exception as e:
-        logging.error(f"❌ Gagal load pending: {e}")
-        pending_media = []
-
-    try:
-        count_str  = r_get(KEY_DAILY_COUNT)
-        date_str   = r_get(KEY_DAILY_DATE)
-        today      = datetime.now(timezone.utc).date()
-        saved_date = (
-            datetime.strptime(date_str, "%Y-%m-%d").date()
-            if date_str else today
-        )
-        daily_count      = int(count_str) if count_str and saved_date == today else 0
-        daily_reset_date = today
-    except Exception as e:
-        logging.error(f"❌ Gagal load daily count: {e}")
-        daily_count      = 0
-        daily_reset_date = datetime.now(timezone.utc).date()
-
-    # Load flood controller state dari Redis
-    try:
-        flood_data = r_get_json(KEY_FLOOD_CTRL)
-        if flood_data:
-            flood_ctrl = SmartFloodController()
-            if isinstance(flood_data.get("last_flood_time"), str):
-                try:
-                    flood_data["last_flood_time"] = datetime.fromisoformat(flood_data["last_flood_time"])
-                except Exception:
-                    flood_data["last_flood_time"] = None
-            flood_ctrl.__dict__.update(flood_data)
-            logging.info("🔄 Flood control state loaded dari Redis")
-        else:
-            flood_ctrl = SmartFloodController()
-    except Exception as e:
-        logging.warning(f"⚠️ Gagal load flood control: {e}")
-        flood_ctrl = SmartFloodController()
-
-    logging.info(
-        f"📂 Data dimuat | Pending: {len(pending_media)} | "
-        f"Daily: {daily_count}/{DAILY_LIMIT}"
-    )
-
-def save_pending():
-    try:
-        r_set(KEY_PENDING, json.dumps(pending_media))
-    except Exception as e:
-        logging.error(f"❌ Gagal save pending: {e}")
-
-def save_daily():
-    try:
-        r_set(KEY_DAILY_COUNT, str(daily_count))
-        r_set(KEY_DAILY_DATE, str(daily_reset_date))
-    except Exception as e:
-        logging.error(f"❌ Gagal save daily: {e}")
-
-def save_flood_ctrl():
-    try:
-        if flood_ctrl:
-            r_set_json(KEY_FLOOD_CTRL, flood_ctrl.__dict__)
-    except Exception as e:
-        logging.error(f"❌ Gagal save flood ctrl: {e}")
-
-def save_all():
-    save_pending()
-    save_daily()
-    save_flood_ctrl()
+        loop = asyncio.get_running_loop()
+        loop.stop()
+    except RuntimeError:
+        sys.exit(0)
 
 # ============================================================
-# === MAIN ENTRY POINT ===
+# === STARTUP & SHUTDOWN ===
+# ============================================================
+async def on_startup(app):
+    load_all()
+    asyncio.create_task(queue_worker(app.bot))
+    logging.info("🚀 Bot siap!")
+
+async def on_shutdown(app):
+    save_all()
+    logging.info("🛑 Bot berhenti, data tersimpan")
+
+# ============================================================
+# === SIGNAL HANDLER ===
+# ============================================================
+def handle_shutdown(signum, frame):
+    logging.info("⚠️ Shutdown signal diterima, menyimpan data...")
+    save_all()
+    logging.info("✅ Data tersimpan, bot berhenti")
+    try:
+        loop = asyncio.get_running_loop()
+        loop.stop()
+    except RuntimeError:
+        sys.exit(0)
+
+# ============================================================
+# === ERROR HANDLER ===
+# ============================================================
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.error(f"Update {update} caused error {context.error}")
+
+# ============================================================
+# === MAIN ===
 # ============================================================
 def main():
-    # Pastikan Redis terhubung
+    signal.signal(signal.SIGINT, handle_shutdown)
+    signal.signal(signal.SIGTERM, handle_shutdown)
+
     connect_redis()
-    load_all()
 
-    # Buat aplikasi Telegram
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .post_init(on_startup)
+        .post_shutdown(on_shutdown)
+        .build()
+    )
 
-    # Handler untuk video masuk
+    app.add_error_handler(error_handler)
     app.add_handler(MessageHandler(filters.VIDEO, forward_media))
 
-    # Admin commands
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("pause", cmd_pause))
     app.add_handler(CommandHandler("resume", cmd_resume))
@@ -848,16 +916,19 @@ def main():
     app.add_handler(CommandHandler("resetdaily", cmd_resetdaily))
     app.add_handler(CommandHandler("setlimit", cmd_setlimit))
     app.add_handler(CommandHandler("setdelay", cmd_setdelay))
+    app.add_handler(CommandHandler("shutdown", cmd_shutdown))
 
-    # Jalankan worker background
-    async def run_worker():
-        await queue_worker(app.bot)
+    logging.info("╔══════════════════════════════════╗")
+    logging.info("║ 🌸 HANAYA BOT v4.0 (Transaksi Aman) ║")
+    logging.info(f"║  Daily Limit : {DAILY_LIMIT} video/hari   ║")
+    logging.info(f"║  Group Size  : {GROUP_SIZE} video/kelompok  ║")
+    logging.info(f"║  Max Pending : {MAX_QUEUE_SIZE} video       ║")
+    logging.info("╚══════════════════════════════════╝")
 
-    app.job_queue.run_once(lambda _: asyncio.create_task(run_worker()), when=0)
-
-    logging.info("🚀 Bot mulai berjalan...")
-    app.run_polling()
+    app.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True
+    )
 
 if __name__ == "__main__":
     main()
-
