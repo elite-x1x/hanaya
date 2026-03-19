@@ -998,7 +998,12 @@ async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         arg = context.args
-        if not isinstance(arg, str):
+        # ✅ Handle semua tipe: str, int, float, list
+        if isinstance(arg, list):
+            arg = arg  # ambil elemen pertama
+        elif isinstance(arg, (int, float)):
+            arg = str(arg)  # konversi ke string
+        elif not isinstance(arg, str):
             await update.message.reply_text("❌ Argumen harus berupa angka (contoh: 1500)")
             return
 
@@ -1028,14 +1033,13 @@ async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         arg = context.args
-        # ✅ DEBUG: log tipe dan nilai arg
-        logging.info(f"🔧 DEBUG: context.args = {arg} | type = {type(arg)}")
-
-        if not isinstance(arg, str):
-            await update.message.reply_text(
-                f"❌ Argumen bukan string! Tipe: {type(arg).__name__}\n"
-                f"Contoh: /setdelay 2.5"
-            )
+        # ✅ Handle semua tipe: str, int, float, list
+        if isinstance(arg, list):
+            arg = arg  # ambil elemen pertama
+        elif isinstance(arg, (int, float)):
+            arg = str(arg)  # konversi ke string
+        elif not isinstance(arg, str):
+            await update.message.reply_text("❌ Argumen harus berupa angka desimal (contoh: 2.5)")
             return
 
         new_delay = float(arg)
@@ -1053,7 +1057,6 @@ async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (ValueError, TypeError) as e:
         logging.error(f"❌ Error parsing setdelay: {e}")
         await update.message.reply_text("❌ Format salah. Gunakan: /setdelay 2.5")
-
 
 async def cmd_shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_superadmin(update):
