@@ -122,7 +122,7 @@ _stream_handler = logging.StreamHandler()
 _stream_handler.setFormatter(_log_formatter)
 
 logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _stream_handler])
-logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)  # Kurangi spam log httpx
 logging.getLogger("telegram").setLevel(logging.WARNING)
 
 # ============================================================
@@ -1147,8 +1147,25 @@ def main():
     app.add_handler(CommandHandler("setdelay",     cmd_setdelay))
     app.add_handler(CommandHandler("shutdown",     cmd_shutdown))
 
+    while True:
+        try:
+            logging.info("🚀 Bot siap!")
+            app.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+                read_timeout=30,  # Tambahkan timeout untuk menghindari freeze
+                write_timeout=30,
+                connect_timeout=30,
+                pool_timeout=30
+            )
+        except Exception as e:
+            logging.error(f"❌ Bot crash: {e}")
+            logging.info("⏳ Menunggu 30 detik sebelum restart...")
+            time.sleep(30)
+            continue
+
     logging.info("╔══════════════════════════════════╗")
-    logging.info("║ 🌸 HANAYA BOT v4.6 (Smart Flood)║")
+    logging.info("║ 🌸 HANAYA BOT v4.6 (Smart Flood) ║")
     logging.info(f"║  Daily Limit : {DAILY_LIMIT} video/hari   ║")
     logging.info(f"║  Group Size  : {GROUP_SIZE} video/kelompok  ║")
     logging.info(f"║  Max Pending : {MAX_QUEUE_SIZE} video       ║")
