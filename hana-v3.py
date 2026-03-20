@@ -757,7 +757,7 @@ def main():
     logging.info("║ 🌸 HANAYA BOT v3.0 (Smart Flood) ║")
     logging.info(f"║  Daily Limit : {DAILY_LIMIT} Media/hari   ║")
     logging.info(f"║  Group Size  : {GROUP_SIZE} video/kelompok  ║")
-    logging.info(f"║  Max Pending : {MAX_QUEUE_SIZE} Media      ║")
+    logging.info(f"║  Max Pending : {MAX_QUEUE_SIZE} Media       ║")
     logging.info("╚══════════════════════════════════╝")
 
     app.run_polling(
