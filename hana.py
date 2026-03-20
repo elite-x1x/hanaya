@@ -880,7 +880,6 @@ async def queue_worker(bot):
                     f"Sent={total_sent} | Pending={total_pending}"
                 )
             except Exception as e:
-                logging.warning(f"⚠️ Gagal ambil```python
                 logging.warning(f"⚠️ Gagal ambil stats akhir: {e}")
 
     logging.info("✅ Worker stopped")
