@@ -4,9 +4,11 @@ import os
 import asyncio
 import random
 import hashlib
-from datetime import datetime, timezone
+import re
 import signal
 import sys
+from collections import OrderedDict
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 
 from telegram import Update, InputMediaVideo
@@ -31,7 +33,7 @@ if ADMIN_CHAT_ID == 0:
     logging.warning("⚠️ ADMIN_CHAT_ID tidak diatur — flood alert dinonaktifkan")
 
 # ============================================================
-# === ADMIN CONFIG (dari .env) ===
+# === ADMIN CONFIG ===
 # ============================================================
 def _parse_id_list(env_key: str) -> list[int]:
     raw = os.getenv(env_key, "")
@@ -111,8 +113,8 @@ FLOOD_WARN_THRESHOLD = 3
 # ============================================================
 # === SETUP LOGGING ===
 # ============================================================
-_log_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-_file_handler  = RotatingFileHandler(
+_log_formatter  = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+_file_handler   = RotatingFileHandler(
     "bot.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
 )
 _file_handler.setFormatter(_log_formatter)
@@ -126,15 +128,17 @@ logging.getLogger("telegram").setLevel(logging.WARNING)
 # ============================================================
 # === GLOBAL STATE ===
 # ============================================================
-pending_media:    list   = []
-is_sending:       bool   = False
-daily_count:      int    = 0
-daily_reset_date         = datetime.now(timezone.utc).date()
-last_save_time           = datetime.now(timezone.utc)
-sending_lock             = asyncio.Lock()
-is_paused:        bool   = False
-local_sent:       set    = set()
-MAX_LOCAL_SENT           = 5000  # batas ukuran local_sent fallback
+pending_media:    list        = []
+is_sending:       bool        = False
+daily_count:      int         = 0
+daily_reset_date              = datetime.now(timezone.utc).date()
+last_save_time                = datetime.now(timezone.utc)
+sending_lock                  = asyncio.Lock()
+is_paused:        bool        = False
+local_sent:       OrderedDict = OrderedDict()
+MAX_LOCAL_SENT                = 5000
+flood_ctrl                    = None
+config_lock                   = asyncio.Lock()
 
 # ============================================================
 # === REDIS CONNECTION ===
@@ -243,12 +247,12 @@ def r_get_json(key: str) -> dict | None:
             return json.loads(raw)
     except json.JSONDecodeError as e:
         logging.error(f"Redis JSON decode error [{key}]: {e}")
-        # Hapus key korup agar tidak terus gagal
+        # ✅ FIX #5 — Proper error handling dengan logging eksplisit
         try:
             redis_client.delete(key)
-            logging.warning(f"🗑️ Key korup dihapus: {key}")
-        except Exception:
-            pass
+            logging.warning(f"🗑️ Key korup berhasil dihapus: {key}")
+        except Exception as del_err:
+            logging.error(f"❌ Gagal hapus key korup [{key}]: {del_err}")
     except Exception as e:
         logging.error(f"Redis GET JSON error [{key}]: {e}")
     return None
@@ -263,27 +267,35 @@ def make_hash(fingerprint: dict) -> str:
     ).hexdigest()
 
 # ============================================================
+# === PARSE RETRY AFTER ===
+# ============================================================
+def parse_retry_after(err: str) -> int:
+    match = re.search(r"[Rr]etry in (\d+)", err)
+    if match:
+        return int(match.group(1))
+    match = re.search(r"retry_after=(\d+)", err)
+    if match:
+        return int(match.group(1))
+    return 60
+
+# ============================================================
 # === SMART FLOOD CONTROLLER ===
 # ============================================================
 class SmartFloodController:
-    """Mengelola flood control dengan penalti kumulatif dan state persistence."""
 
     def __init__(self):
-        self.flood_count:     int                    = 0
-        self.total_flood:     int                    = 0
-        self.last_flood_time: datetime | None        = None
-        self.penalty:         float                  = 0.0
-        self.is_cooling:      bool                   = False
-        self.group_delay_min: float                  = float(DELAY_BETWEEN_GROUP_MIN)
-        self.group_delay_max: float                  = float(DELAY_BETWEEN_GROUP_MAX)
+        self.flood_count:     int             = 0
+        self.total_flood:     int             = 0
+        self.last_flood_time: datetime | None = None
+        self.penalty:         float           = 0.0
+        self.is_cooling:      bool            = False
+        self.group_delay_min: float           = float(DELAY_BETWEEN_GROUP_MIN)
+        self.group_delay_max: float           = float(DELAY_BETWEEN_GROUP_MAX)
 
-    # ----------------------------------------------------------
     def _parse_last_flood_time(self, value) -> datetime | None:
-        """Parse last_flood_time dari berbagai format secara aman."""
         if value is None:
             return None
         if isinstance(value, datetime):
-            # Pastikan timezone-aware
             if value.tzinfo is None:
                 return value.replace(tzinfo=timezone.utc)
             return value
@@ -299,11 +311,9 @@ class SmartFloodController:
         logging.warning(f"⚠️ Tipe last_flood_time tidak dikenal: {type(value)}")
         return None
 
-    # ----------------------------------------------------------
     def record_flood(self, suggested_wait: int) -> float:
         now = datetime.now(timezone.utc)
 
-        # Reset counter jika sudah lama tidak flood
         if self.last_flood_time is not None:
             elapsed = (now - self.last_flood_time).total_seconds()
             if elapsed > FLOOD_RESET_AFTER:
@@ -341,12 +351,13 @@ class SmartFloodController:
         self.save_state()
         return total_wait
 
-    # ----------------------------------------------------------
     def record_success(self) -> None:
         if self.penalty > 0:
             self.penalty = max(0.0, self.penalty - 5.0)
         if self.flood_count > 0:
             self.flood_count = max(0, self.flood_count - 1)
+            if self.flood_count == 0:
+                self.last_flood_time = None
         if self.group_delay_min > DELAY_BETWEEN_GROUP_MIN:
             self.group_delay_min = max(
                 float(DELAY_BETWEEN_GROUP_MIN), self.group_delay_min - 2.0
@@ -358,11 +369,9 @@ class SmartFloodController:
         self.is_cooling = False
         self.save_state()
 
-    # ----------------------------------------------------------
     def get_group_delay(self) -> float:
         return random.uniform(self.group_delay_min, self.group_delay_max)
 
-    # ----------------------------------------------------------
     def get_status(self) -> str:
         return (
             f"FloodCtrl | Count: {self.flood_count} | "
@@ -371,7 +380,6 @@ class SmartFloodController:
             f"Delay: {self.group_delay_min:.0f}-{self.group_delay_max:.0f}s"
         )
 
-    # ----------------------------------------------------------
     def to_dict(self) -> dict:
         return {
             "flood_count"    : self.flood_count,
@@ -386,10 +394,8 @@ class SmartFloodController:
             "group_delay_max": self.group_delay_max,
         }
 
-    # ----------------------------------------------------------
     @classmethod
     def from_dict(cls, data: dict) -> "SmartFloodController":
-        """Buat instance dari dict, dengan validasi aman."""
         instance = cls()
         try:
             instance.flood_count     = int(data.get("flood_count", 0))
@@ -403,16 +409,26 @@ class SmartFloodController:
             instance.group_delay_max = float(data.get("group_delay_max", DELAY_BETWEEN_GROUP_MAX))
         except (TypeError, ValueError) as e:
             logging.warning(f"⚠️ Gagal load state flood control: {e}")
-            # Reset ke default
             instance = cls()
         return instance
 
-    # ----------------------------------------------------------
     def save_state(self) -> None:
         try:
             r_set_json(KEY_FLOOD_CTRL, self.to_dict())
         except Exception as e:
             logging.error(f"❌ Gagal save flood ctrl state: {e}")
+
+# ============================================================
+# === LOCAL SENT HELPERS ===
+# ============================================================
+# ✅ FIX #3 — Eviction konsisten, max_size parameter eksplisit
+def _local_sent_add(key: str, max_size: int = MAX_LOCAL_SENT) -> None:
+    """Tambah ke local_sent dengan eviction FIFO jika melebihi batas."""
+    if key in local_sent:
+        return
+    local_sent[key] = True
+    while len(local_sent) > max_size:
+        local_sent.popitem(last=False)
 
 # ============================================================
 # === LOAD & SAVE ===
@@ -460,7 +476,7 @@ def load_all() -> None:
         logging.warning(f"⚠️ Gagal load flood control: {e}")
         flood_ctrl = SmartFloodController()
 
-    # Load daily limit dari Redis (jika ada)
+    # Load daily limit
     try:
         limit_str = r_get(KEY_DAILY_LIMIT)
         if limit_str:
@@ -540,14 +556,18 @@ def get_fingerprint(msg) -> dict | None:
         'timestamp': datetime.now(timezone.utc).isoformat()
     }
 
-def is_duplicate(fingerprint: dict) -> bool:
+def is_duplicate(fingerprint: dict, pending_snapshot: list | None = None) -> bool:
+    """
+    Cek duplikat dengan 3 lapis.
+    pending_snapshot: snapshot list pending (aman dari concurrent modification)
+    """
     if not fingerprint:
         return False
 
     file_id = fingerprint.get('file_id', '')
     fp_hash = make_hash(fingerprint)
 
-    # --- Lapis 1: Cek Redis SENT ---
+    # Lapis 1: Redis
     if redis_client:
         try:
             if r_sismember(KEY_SENT, file_id):
@@ -559,16 +579,20 @@ def is_duplicate(fingerprint: dict) -> bool:
         except Exception as e:
             logging.warning(f"⚠️ Redis check error: {e}")
 
-    # --- Lapis 2: Cek local_sent ---
+    # Lapis 2: local_sent
     if file_id in local_sent or fp_hash in local_sent:
         logging.debug(f"✅ Duplikat (local) {file_id[:8]}...")
         return True
 
-    # --- Lapis 3: Cek pending lokal ---
-    for item in pending_media:
-        q_file_id, _, q_fp = item
-        if q_file_id == file_id or make_hash(q_fp) == fp_hash:
-            return True
+    # Lapis 3: pending snapshot
+    snapshot = pending_snapshot if pending_snapshot is not None else pending_media
+    for item in snapshot:
+        try:
+            q_file_id, _, q_fp = item
+            if q_file_id == file_id or make_hash(q_fp) == fp_hash:
+                return True
+        except (ValueError, TypeError):
+            continue
 
     return False
 
@@ -586,12 +610,9 @@ def mark_sent(fingerprint: dict) -> bool:
         logging.debug(f"✅ Marked sent: {file_id[:8]}...")
     except Exception as e:
         logging.error(f"❌ Gagal mark sent (Redis): {e}")
-        # Fallback: mark locally
-        local_sent.add(file_id)
-        local_sent.add(fp_hash)
-        # Batasi ukuran local_sent
-        if len(local_sent) > MAX_LOCAL_SENT:
-            local_sent.pop()
+        # ✅ FIX #3 — Gunakan _local_sent_add yang sudah fixed
+        _local_sent_add(file_id)
+        _local_sent_add(fp_hash)
         success = False
 
     return success
@@ -610,7 +631,13 @@ def check_daily_reset() -> None:
 # ============================================================
 # === KIRIM MEDIA GROUP ===
 # ============================================================
-async def send_media_group_with_retry(bot, chat_id: int, media_items: list, admin_chat_id: int | None = None, timeout: int = 30) -> bool:
+async def send_media_group_with_retry(
+    bot,
+    chat_id: int,
+    media_items: list,
+    admin_chat_id: int | None = None,
+    timeout: int = 30
+) -> bool:
     global flood_ctrl
 
     for attempt in range(MAX_RETRIES):
@@ -628,7 +655,10 @@ async def send_media_group_with_retry(bot, chat_id: int, media_items: list, admi
             return True
 
         except asyncio.TimeoutError:
-            logging.error(f"❌ Timeout saat mengirim grup media (attempt {attempt+1}/{MAX_RETRIES})")
+            logging.error(
+                f"❌ Timeout saat mengirim grup media "
+                f"(attempt {attempt+1}/{MAX_RETRIES})"
+            )
             if attempt == MAX_RETRIES - 1:
                 return False
 
@@ -636,20 +666,9 @@ async def send_media_group_with_retry(bot, chat_id: int, media_items: list, admi
             err = str(e)
 
             if "Flood control" in err or "Too Many Requests" in err:
-                try:
-                    # Extract retry time from error message
-                    # Format: "Flood control exceeded. Retry in 42 seconds."
-                    parts = err.split("Retry in ")
-                    if len(parts) > 1:
-                        suggested = int(parts.split())
-                    else:
-                        suggested = 60
-                except (ValueError, IndexError):
-                    suggested = 60
-
+                suggested  = parse_retry_after(err)
                 total_wait = flood_ctrl.record_flood(suggested)
 
-                # Kirim alert jika flood count mencapai threshold dan admin_chat_id valid
                 if (
                     flood_ctrl.flood_count >= FLOOD_WARN_THRESHOLD
                     and admin_chat_id != 0
@@ -680,7 +699,9 @@ async def send_media_group_with_retry(bot, chat_id: int, media_items: list, admi
                 await asyncio.sleep(wait)
 
             elif "chat not found" in err.lower() or "forbidden" in err.lower():
-                logging.error(f"❌ Akses ditolak ke chat {chat_id} — bot mungkin diblokir")
+                logging.error(
+                    f"❌ Akses ditolak ke chat {chat_id} — bot mungkin diblokir"
+                )
                 if admin_chat_id != 0:
                     try:
                         await bot.send_message(
@@ -704,7 +725,6 @@ async def send_media_group_with_retry(bot, chat_id: int, media_items: list, admi
                 base  = min(60, (2 ** attempt) * 5)
                 extra = random.uniform(5, 20)
                 wait  = base + extra
-
                 logging.error(
                     f"❌ Error tidak dikenal (attempt {attempt+1}/{MAX_RETRIES})\n"
                     f"   ├─ Error : {err[:150]}\n"
@@ -724,6 +744,7 @@ async def send_media_group_with_retry(bot, chat_id: int, media_items: list, admi
 async def queue_worker(bot):
     global pending_media, is_sending, daily_count, last_save_time
 
+    logging.info("✅ Worker started")
     while True:
         await asyncio.sleep(WAIT_TIME)
 
@@ -746,66 +767,83 @@ async def queue_worker(bot):
             logging.warning(f"⛔ Daily limit tercapai ({DAILY_LIMIT})")
             continue
 
-        # Trim pending jika terlalu besar
-        if len(pending_media) > MAX_QUEUE_SIZE:
-            overflow = len(pending_media) - int(MAX_QUEUE_SIZE * 0.95)
-            removed = pending_media[:overflow]
-            pending_media = pending_media[overflow:]
-            save_pending()
-            logging.warning(f"⚠️ Pending overflow: removed {len(removed)} items")
-
+        # ✅ FIX #2 — Atomic batch grab dalam satu lock, cegah race condition
         async with sending_lock:
+            if is_sending:
+                continue
             is_sending = True
 
-        try:
+            if len(pending_media) > MAX_QUEUE_SIZE:
+                overflow      = len(pending_media) - int(MAX_QUEUE_SIZE * 0.95)
+                removed       = pending_media[:overflow]
+                pending_media = pending_media[overflow:]
+                save_pending()
+                logging.warning(f"⚠️ Pending overflow: removed {len(removed)} items")
+
             batch = pending_media.copy()
             pending_media.clear()
             save_pending()
 
-            total      = len(batch)
-            sent_count = 0
+        total      = len(batch)
+        sent_count = 0
 
-            logging.info(f"▶️ Mulai kirim {total} video | Daily: {daily_count}/{DAILY_LIMIT}")
+        try:
+            logging.info(
+                f"▶️ Mulai kirim {total} video | Daily: {daily_count}/{DAILY_LIMIT}"
+            )
 
             for i in range(0, total, GROUP_SIZE):
                 check_daily_reset()
 
                 if daily_count >= DAILY_LIMIT:
-                    pending_media.extend(batch[i:])
+                    async with sending_lock:
+                        pending_media.extend(batch[i:])
                     save_pending()
                     logging.warning(f"⛔ Limit tercapai, {total - i} video ditunda")
                     break
 
-                group      = batch[i:i + GROUP_SIZE]
-                group_num  = (i // GROUP_SIZE) + 1
-                total_grp  = (total + GROUP_SIZE - 1) // GROUP_SIZE
+                group     = batch[i:i + GROUP_SIZE]
+                group_num = (i // GROUP_SIZE) + 1
+                total_grp = (total + GROUP_SIZE - 1) // GROUP_SIZE
+
+                # ✅ FIX #2 — Snapshot pending untuk cek duplikat (hindari iterasi concurrent)
+                async with sending_lock:
+                    pending_snapshot = pending_media.copy()
 
                 items = []
                 for file_id, media_type, fp in group:
-                    if not is_duplicate(fp):
+                    if not is_duplicate(fp, pending_snapshot):
                         items.append((file_id, media_type))
                         if not mark_sent(fp):
                             logging.warning(f"⚠️ Gagal menandai {file_id} sebagai sent")
                     else:
-                        logging.debug(f"ℹ️ Skip duplicate: {file_id[:8]}...")
+                        logging.info(f"ℹ️ Skip duplicate: {file_id[:8]}...")
 
                 if items:
                     success = await send_media_group_with_retry(
                         bot, TARGET_CHAT_ID, items, ADMIN_CHAT_ID
                     )
                     if success:
-                        daily_count += len(items)
-                        sent_count  += len(items)
+                        # ✅ FIX #4 — Update daily_count dalam lock, baca config dalam lock
+                        async with sending_lock:
+                            daily_count += len(items)
+                        sent_count += len(items)
                         save_daily()
                         for file_id, _, fp in group:
-                            logging.info(f"✅ Terkirim: {file_id[:8]}... | {fp['width']}x{fp['height']} | {fp['duration']}s")
+                            logging.info(
+                                f"✅ Terkirim: {file_id[:8]}... | "
+                                f"{fp['width']}x{fp['height']} | {fp['duration']}s"
+                            )
                     else:
                         logging.error(f"❌ Gagal kirim group {group_num}/{total_grp}")
-                        # Kembalikan ke pending
-                        pending_media.extend(group)
+                        async with sending_lock:
+                            pending_media.extend(group)
                         save_pending()
 
-                delay = DELAY_BETWEEN_SEND + random.uniform(DELAY_RANDOM_MIN, DELAY_RANDOM_MAX)
+                # ✅ FIX #4 — Baca DELAY_BETWEEN_SEND dengan config_lock
+                async with config_lock:
+                    current_delay = DELAY_BETWEEN_SEND
+                delay = current_delay + random.uniform(DELAY_RANDOM_MIN, DELAY_RANDOM_MAX)
                 await asyncio.sleep(delay)
 
                 if sent_count > 0 and sent_count % BATCH_PAUSE_EVERY == 0:
@@ -814,25 +852,37 @@ async def queue_worker(bot):
                     await asyncio.sleep(pause)
                 else:
                     group_delay = flood_ctrl.get_group_delay()
-                    logging.info(f"⏳ Jeda group: {group_delay:.1f}s | {flood_ctrl.get_status()}")
+                    logging.info(
+                        f"⏳ Jeda group: {group_delay:.1f}s | {flood_ctrl.get_status()}"
+                    )
                     await asyncio.sleep(group_delay)
 
         except Exception as e:
-            logging.error(f"❌ Error worker: {e}")
+            logging.error(f"❌ Error worker: {e}", exc_info=True)
             remaining = batch[sent_count:]
             if remaining:
-                pending_media.extend(remaining)
+                async with sending_lock:
+                    pending_media.extend(remaining)
                 save_pending()
 
         finally:
             async with sending_lock:
                 is_sending = False
+
             save_all()
-            total_sent = redis_client.scard(KEY_SENT) if redis_client else 0
-            total_pending = len(pending_media)
-            logging.info(
-                f"✅ Selesai | Terkirim: {sent_count}/{total} | Daily: {daily_count}/{DAILY_LIMIT} | 📊 Total: Sent={total_sent} | Pending={total_pending}"
-            )
+
+            try:
+                total_sent    = redis_client.scard(KEY_SENT) if redis_client else len(local_sent)
+                total_pending = len(pending_media)
+                logging.info(
+                    f"✅ Selesai | Terkirim: {sent_count}/{total} | "
+                    f"Daily: {daily_count}/{DAILY_LIMIT} | "
+                    f"Sent={total_sent} | Pending={total_pending}"
+                )
+            except Exception as e:
+                logging.warning(f"⚠️ Gagal ambil stats akhir: {e}")
+
+    logging.info("✅ Worker stopped")
 
 # ============================================================
 # === HANDLER ===
@@ -848,29 +898,34 @@ async def forward_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_duplicate(fp):
         logging.info(
-            f"❌ Duplikat: {fp['file_id'] [:8]}... | {fp['width']}x{fp['height']} | {fp['duration']}s"
+            f"❌ Duplikat: {fp['file_id'] [:8]}... | "
+            f"{fp['width']}x{fp['height']} | {fp['duration']}s"
         )
         return
 
     file_id    = fp.get('file_id')
     media_type = fp.get('type')
 
-    # Simpan ke pending
     async with sending_lock:
         pending_media.append((file_id, media_type, fp))
         save_pending()
-        logging.info(f"⏳ Pending: {file_id[:8]}... | {fp['width']}x{fp['height']} | {fp['duration']}s")
+        logging.info(
+            f"⏳ Pending: {file_id[:8]}... | {fp['width']}x{fp['height']} | {fp['duration']}s"
+        )
 
-    # Notifikasi total
     total_pending = len(pending_media)
-    total_sent = redis_client.scard(KEY_SENT) if redis_client else 0
+    total_sent    = redis_client.scard(KEY_SENT) if redis_client else len(local_sent)
     logging.info(f"📊 Total: Terkirim={total_sent} | Pending={total_pending} | Failed=0")
 
 # ============================================================
-# === ADMIN CONFIG ===
+# === ADMIN ROLE HELPERS ===
 # ============================================================
 def get_role(update: Update) -> str | None:
-    return ADMINS.get(update.effective_chat.id)
+    if update.effective_user is None:
+        return None
+    role = ADMINS.get(update.effective_user.id)
+    logging.debug(f"User {update.effective_user.id} role: {role}")
+    return role
 
 def is_superadmin(update: Update) -> bool:
     return get_role(update) == "superadmin"
@@ -879,7 +934,7 @@ def is_moderator(update: Update) -> bool:
     return get_role(update) in ["moderator", "superadmin"]
 
 async def notify_admins(bot, text: str):
-    for admin_id, role in ADMINS.items():
+    for admin_id in ADMINS:
         try:
             await bot.send_message(chat_id=admin_id, text=f"[ADMIN ACTION] {text}")
         except Exception as e:
@@ -889,10 +944,10 @@ async def notify_admins(bot, text: str):
 # === ADMIN COMMANDS ===
 # ============================================================
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_moderator(update): 
+    if not is_moderator(update):
         await update.message.reply_text("❌ Anda bukan moderator/admin")
         return
-    total_sent = redis_client.scard(KEY_SENT) if redis_client else 0
+    total_sent    = redis_client.scard(KEY_SENT) if redis_client else len(local_sent)
     total_pending = len(pending_media)
     text = (
         f"📊 STATUS BOT\n"
@@ -912,7 +967,7 @@ async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_paused = True
     msg = f"⏸️ Worker dijeda oleh {update.effective_user.first_name}"
     await update.message.reply_text(msg)
-    await notify_admins(context.bot, msg)  # ✅ fix
+    await notify_admins(context.bot, msg)
 
 async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_moderator(update):
@@ -922,47 +977,72 @@ async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_paused = False
     msg = f"▶️ Worker dilanjutkan oleh {update.effective_user.first_name}"
     await update.message.reply_text(msg)
-    await notify_admins(context.bot, msg)  # ✅ fix
+    await notify_admins(context.bot, msg)
 
 async def cmd_flushpending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_superadmin(update):
         await update.message.reply_text("❌ Hanya superadmin yang bisa menghapus pending")
         return
     global pending_media
-    pending_media.clear()
+    async with sending_lock:
+        pending_media.clear()
     save_pending()
     msg = f"🗑️ Pending queue dikosongkan oleh {update.effective_user.first_name}"
     await update.message.reply_text(msg)
-    await notify_admins(context.bot, msg)  # ✅ fix
+    await notify_admins(context.bot, msg)
 
 async def cmd_resetdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_superadmin(update):
         await update.message.reply_text("❌ Hanya superadmin yang bisa reset daily")
         return
     global daily_count, daily_reset_date
-    daily_count = 0
-    daily_reset_date = datetime.now(timezone.utc).date()
+    async with sending_lock:
+        daily_count      = 0
+        daily_reset_date = datetime.now(timezone.utc).date()
     save_daily()
     msg = f"🔄 Daily counter direset oleh {update.effective_user.first_name}"
     await update.message.reply_text(msg)
-    await notify_admins(context.bot, msg)  # ✅ fix
+    await notify_admins(context.bot, msg)
+
+# ✅ FIX #1 — _flatten_arg: infinite loop diperbaiki dengan arg
+def _flatten_arg(arg) -> str | None:
+    """Flatten nested list/tuple menjadi string."""
+    while isinstance(arg, (list, tuple)):
+        if len(arg) == 0:
+            return None
+        arg = arg  # ✅ Ambil elemen pertama, bukan arg = arg
+    return str(arg).strip()
 
 async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_superadmin(update):
         await update.message.reply_text("❌ Hanya superadmin yang bisa mengubah limit")
         return
     try:
-        new_limit = int(context.args)  # ✅ fix: ambil index 
+        if not context.args:
+            await update.message.reply_text("❌ Format salah. Gunakan: /setlimit 1000")
+            return
+
+        arg_str = _flatten_arg(context.args)
+        if arg_str is None:
+            await update.message.reply_text("❌ Format salah. Gunakan: /setlimit 1000")
+            return
+
+        new_limit = int(arg_str)
         if not (1 <= new_limit <= 5000):
             await update.message.reply_text("❌ Limit harus antara 1-5000")
             return
-        global DAILY_LIMIT
-        DAILY_LIMIT = new_limit
+
+        # ✅ FIX #4 — Gunakan config_lock untuk update DAILY_LIMIT
+        async with config_lock:
+            global DAILY_LIMIT
+            DAILY_LIMIT = new_limit
         save_daily_limit()
         msg = f"⚙️ Daily limit diubah ke {DAILY_LIMIT} oleh {update.effective_user.first_name}"
         await update.message.reply_text(f"✅ {msg}")
-        await notify_admins(context.bot, msg)  # ✅ fix
-    except (IndexError, ValueError):
+        await notify_admins(context.bot, msg)
+
+    except (ValueError, TypeError) as e:
+        logging.error(f"❌ Error parsing setlimit: {e}")
         await update.message.reply_text("❌ Format salah. Gunakan: /setlimit 1000")
 
 async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -970,17 +1050,31 @@ async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Hanya superadmin yang bisa mengubah delay")
         return
     try:
-        new_delay = float(context.args)  # ✅ fix: ambil index 
+        if not context.args:
+            await update.message.reply_text("❌ Format salah. Gunakan: /setdelay 2.5")
+            return
+
+        arg_str = _flatten_arg(context.args)
+        if arg_str is None:
+            await update.message.reply_text("❌ Format salah. Gunakan: /setdelay 2.5")
+            return
+
+        new_delay = float(arg_str)
         if not (0.1 <= new_delay <= 10.0):
             await update.message.reply_text("❌ Delay harus antara 0.1-10.0 detik")
             return
-        global DELAY_BETWEEN_SEND
-        DELAY_BETWEEN_SEND = new_delay
+
+        # ✅ FIX #4 — Gunakan config_lock untuk update DELAY_BETWEEN_SEND
+        async with config_lock:
+            global DELAY_BETWEEN_SEND
+            DELAY_BETWEEN_SEND = new_delay
         save_send_delay()
         msg = f"⚙️ Delay diubah ke {DELAY_BETWEEN_SEND:.1f}s oleh {update.effective_user.first_name}"
         await update.message.reply_text(f"✅ {msg}")
-        await notify_admins(context.bot, msg)  # ✅ fix
-    except (IndexError, ValueError):
+        await notify_admins(context.bot, msg)
+
+    except (ValueError, TypeError) as e:
+        logging.error(f"❌ Error parsing setdelay: {e}")
         await update.message.reply_text("❌ Format salah. Gunakan: /setdelay 2.5")
 
 async def cmd_shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -989,13 +1083,10 @@ async def cmd_shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     msg = f"🛑 Bot dimatikan oleh {update.effective_user.first_name}"
     await update.message.reply_text(msg)
-    await notify_admins(context.bot, msg)  # ✅ fix
+    await notify_admins(context.bot, msg)
     save_all()
-    try:
-        loop = asyncio.get_running_loop()
-        loop.stop()
-    except RuntimeError:
-        sys.exit(0)
+    await context.application.stop()
+    logging.info("✅ Bot berhenti dengan aman")
 
 # ============================================================
 # === STARTUP & SHUTDOWN ===
@@ -1027,7 +1118,7 @@ def handle_shutdown(signum, frame):
 # === ERROR HANDLER ===
 # ============================================================
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.error(f"Update {update} caused error {context.error}")
+    logging.error(f"Update {update} caused error {context.error}", exc_info=context.error)
 
 # ============================================================
 # === MAIN ===
@@ -1047,22 +1138,21 @@ def main():
     app.add_error_handler(error_handler)
     app.add_handler(MessageHandler(filters.VIDEO, forward_media))
 
-    app.add_handler(CommandHandler("status", cmd_status))
-    app.add_handler(CommandHandler("pause", cmd_pause))
-    app.add_handler(CommandHandler("resume", cmd_resume))
+    app.add_handler(CommandHandler("status",       cmd_status))
+    app.add_handler(CommandHandler("pause",        cmd_pause))
+    app.add_handler(CommandHandler("resume",       cmd_resume))
     app.add_handler(CommandHandler("flushpending", cmd_flushpending))
-    app.add_handler(CommandHandler("resetdaily", cmd_resetdaily))
-    app.add_handler(CommandHandler("setlimit", cmd_setlimit))
-    app.add_handler(CommandHandler("setdelay", cmd_setdelay))
-    app.add_handler(CommandHandler("shutdown", cmd_shutdown))
+    app.add_handler(CommandHandler("resetdaily",   cmd_resetdaily))
+    app.add_handler(CommandHandler("setlimit",     cmd_setlimit))
+    app.add_handler(CommandHandler("setdelay",     cmd_setdelay))
+    app.add_handler(CommandHandler("shutdown",     cmd_shutdown))
 
-    logging.info("╔══════════════════════════════════════════════════════════╗")
-    logging.info("║ 🌸 HANAYA BOT v4.5 (Transaksi Aman & Stabil)              ║")
-    logging.info(f"║  Daily Limit : {DAILY_LIMIT} video/hari                    ║")
-    logging.info(f"║  Group Size  : {GROUP_SIZE} video/kelompok                 ║")
-    logging.info(f"║  Max Pending : {MAX_QUEUE_SIZE} video                      ║")
-    logging.info(f"║  Delay       : {DELAY_BETWEEN_SEND:.1f}s antar video        ║")
-    logging.info("╚══════════════════════════════════════════════════════════╝")
+    logging.info("╔══════════════════════════════════╗")
+    logging.info("║ 🌸 HANAYA BOT v4.6 (Smart Flood) ║")
+    logging.info(f"║  Daily Limit : {DAILY_LIMIT} video/hari   ║")
+    logging.info(f"║  Group Size  : {GROUP_SIZE} video/kelompok  ║")
+    logging.info(f"║  Max Pending : {MAX_QUEUE_SIZE} video       ║")
+    logging.info("╚══════════════════════════════════╝")
 
     app.run_polling(
         allowed_updates=Update.ALL_TYPES,
