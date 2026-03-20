@@ -265,7 +265,7 @@ def make_hash(fingerprint: dict) -> str:
     return hashlib.md5(
         json.dumps(fp_copy, sort_keys=True).encode()
     ).hexdigest()
-
+	
 # ============================================================
 # === PARSE RETRY AFTER ===
 # ============================================================
@@ -880,6 +880,7 @@ async def queue_worker(bot):
                     f"Sent={total_sent} | Pending={total_pending}"
                 )
             except Exception as e:
+                logging.warning(f"⚠️ Gagal ambil```python
                 logging.warning(f"⚠️ Gagal ambil stats akhir: {e}")
 
     logging.info("✅ Worker stopped")
@@ -1015,7 +1016,7 @@ def _flatten_arg(arg) -> str | None:
 
 async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_superadmin(update):
-        await update.message.reply_text("❌ Hanya superadmin yang bisa mengubah limit")
+        await update.message.reply_text("❌ Anda bukan superadmin")
         return
     try:
         if not context.args:
@@ -1047,7 +1048,7 @@ async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_superadmin(update):
-        await update.message.reply_text("❌ Hanya superadmin yang bisa mengubah delay")
+        await update.message.reply_text("❌ Anda bukan superadmin")
         return
     try:
         if not context.args:
@@ -1147,16 +1148,8 @@ def main():
     app.add_handler(CommandHandler("setdelay",     cmd_setdelay))
     app.add_handler(CommandHandler("shutdown",     cmd_shutdown))
 
-    #logging.info(" ╔══════════════════════════════════════════════════════╗")
-    #logging.info(" ║ 🌸 HANAYA BOT v4.6 (Patched & Stable)                ║")
-    #logging.info(f"║  Daily Limit : {DAILY_LIMIT} video/hari              ║")
-    #logging.info(f"║  Group Size  : {GROUP_SIZE} video/kelompok           ║")
-    #logging.info(f"║  Max Pending : {MAX_QUEUE_SIZE} video                ║")
-    #logging.info(f"║  Delay       : {DELAY_BETWEEN_SEND:.1f}s antar video ║")
-    #logging.info(" ╚══════════════════════════════════════════════════════╝")
-
     logging.info("╔══════════════════════════════════╗")
-    logging.info("║ 🌸 HANAYA BOT v4.6 (Transaksi Aman) ║")
+    logging.info("║ 🌸 HANAYA BOT v4.6 (Smart Flood)║")
     logging.info(f"║  Daily Limit : {DAILY_LIMIT} video/hari   ║")
     logging.info(f"║  Group Size  : {GROUP_SIZE} video/kelompok  ║")
     logging.info(f"║  Max Pending : {MAX_QUEUE_SIZE} video       ║")
