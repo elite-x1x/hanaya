@@ -852,20 +852,20 @@ async def send_media_group_with_retry(
                 logging.warning(f"⚠️ File tidak valid, dilewati: {err[:100]}")
                 return False
 
-                else:
-                    base  = min(60, (2 ** attempt) * 5)
-                    extra = random.uniform(5, 20)
-                    wait  = base + extra
-                    logging.error(
-                        f"❌ Error tidak dikenal (attempt {attempt+1}/{MAX_RETRIES})\n"
-                        f"   ├─ Error : {err[:150]}\n"
-                        f"   └─ Tunggu: {wait:.1f}s"
-                    )
-                    await asyncio.sleep(wait)
+            else:
+                base  = min(60, (2 ** attempt) * 5)
+                extra = random.uniform(5, 20)
+                wait  = base + extra
+                logging.error(
+                    f"❌ Error tidak dikenal (attempt {attempt+1}/{MAX_RETRIES})\n"
+                    f"   ├─ Error : {err[:150]}\n"
+                    f"   └─ Tunggu: {wait:.1f}s"
+                )
+                await asyncio.sleep(wait)
 
-                    if attempt == MAX_RETRIES - 1:
-                        logging.error(f"💀 Gagal total setelah {MAX_RETRIES} percobaan")
-                        return False
+                if attempt == MAX_RETRIES - 1:
+                    logging.error(f"💀 Gagal total setelah {MAX_RETRIES} percobaan")
+                    return False
 
     return False
 
