@@ -97,7 +97,7 @@ BATCH_PAUSE_MIN         = 300
 BATCH_PAUSE_MAX         = 600
 DAILY_LIMIT             = 2500
 MAX_RETRIES             = 3
-MAX_QUEUE_SIZE          = 5000
+MAX_QUEUE_SIZE          = 7000
 AUTO_SAVE_INTERVAL      = 60
 
 # ============================================================
@@ -1280,7 +1280,7 @@ def main():
     logging.info("║ 🌸 HANAYA BOT v4.7 (Smart Flood) ║")
     logging.info(f"║  Daily Limit : {DAILY_LIMIT} Media/hari   ║")
     logging.info(f"║  Group Size  : {GROUP_SIZE} Media/kelompok  ║")
-    logging.info(f"║  Max Pending : {MAX_QUEUE_SIZE} Media       ║")
+    logging.info(f"║  Max Pending : {MAX_QUEUE_SIZE} Media        ║")
     logging.info("╚══════════════════════════════════╝")
 
     app.run_polling(
