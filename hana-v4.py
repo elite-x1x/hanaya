@@ -87,7 +87,7 @@ SENT_TTL = 60 * 60 * 24 * 30  # 30 hari
 # ============================================================
 DELAY_BETWEEN_SEND      = 2.0
 DELAY_RANDOM_MIN        = 0.5
-DELAY_RANDOM_MAX        = 2.0
+DELAY_RANDOM_MAX        = 2.5
 GROUP_SIZE              = 5
 DELAY_BETWEEN_GROUP_MIN = 20
 DELAY_BETWEEN_GROUP_MAX = 40
@@ -95,9 +95,9 @@ WAIT_TIME               = 20
 BATCH_PAUSE_EVERY       = 30
 BATCH_PAUSE_MIN         = 300
 BATCH_PAUSE_MAX         = 600
-DAILY_LIMIT             = 1500
+DAILY_LIMIT             = 2500
 MAX_RETRIES             = 3
-MAX_QUEUE_SIZE          = 10000
+MAX_QUEUE_SIZE          = 5000
 AUTO_SAVE_INTERVAL      = 60
 
 # ============================================================
@@ -111,19 +111,148 @@ FLOOD_RESET_AFTER    = 600
 FLOOD_WARN_THRESHOLD = 3
 
 # ============================================================
-# === SETUP LOGGING ===
+# === ENHANCED LOGGING SYSTEM ===
 # ============================================================
-_log_formatter  = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-_file_handler   = RotatingFileHandler(
+import logging
+from logging.handlers import RotatingFileHandler
+from datetime import datetime, timezone
+import traceback
+import sys
+
+class CompactFormatter(logging.Formatter):
+    """Formatter yang ringkas, hanya tampilkan error essentials tanpa full traceback"""
+    
+    COLORS = {
+        'DEBUG': '\033[36m',      # Cyan
+        'INFO': '\033[32m',       # Green
+        'WARNING': '\033[33m',    # Yellow
+        'ERROR': '\033[31m',      # Red
+        'CRITICAL': '\033[35m',   # Magenta
+        'RESET': '\033[0m'
+    }
+    
+    def format(self, record):
+        # Jangan tampilkan traceback panjang untuk network error yang berulang
+        if self._is_network_error(record):
+            return self._format_network_error(record)
+        
+        # Format normal untuk log lainnya
+        timestamp = datetime.fromtimestamp(record.created, tz=timezone.utc).strftime(
+            "%Y-%m-%d %H:%M:%S,%03d"
+        )
+        level = record.levelname
+        message = record.getMessage()
+        
+        # Tambahkan warna untuk terminal
+        color = self.COLORS.get(level, '')
+        reset = self.COLORS['RESET']
+        
+        if record.exc_info and record.levelno >= logging.ERROR:
+            # Tampilkan error singkat saja
+            exc_type, exc_value, _ = record.exc_info
+            exc_name = exc_type.__name__ if exc_type else "Unknown"
+            return f"{timestamp} [{color}{level}{reset}] {message}\n    └─ {exc_name}: {str(exc_value)[:150]}"
+        
+        return f"{timestamp} [{color}{level}{reset}] {message}"
+    
+    @staticmethod
+    def _is_network_error(record):
+        """Deteksi network error yang sering terjadi"""
+        network_errors = [
+            'httpx.ReadError',
+            'httpx.ConnectError',
+            'httpx.TimeoutException',
+            'ConnectionError',
+            'TimeoutError',
+            'OSError',
+            'socket.error'
+        ]
+        
+        if record.exc_info:
+            exc_type = record.exc_info
+            exc_name = exc_type.__name__ if exc_type else ""
+            return any(err in exc_name for err in network_errors)
+        
+        return any(err in record.getMessage() for err in network_errors)
+    
+    @staticmethod
+    def _format_network_error(record):
+        """Format network error secara ringkas"""
+        timestamp = datetime.fromtimestamp(record.created, tz=timezone.utc).strftime(
+            "%Y-%m-%d %H:%M:%S,%03d"
+        )
+        level = record.levelname
+        message = record.getMessage()
+        color = CompactFormatter.COLORS.get(level, '')
+        reset = CompactFormatter.COLORS['RESET']
+        
+        if record.exc_info:
+            exc_type, exc_value, _ = record.exc_info
+            exc_name = exc_type.__name__ if exc_type else "Unknown"
+            exc_msg = str(exc_value)[:100]
+            return f"{timestamp} [{color}{level}{reset}] {exc_name}: {exc_msg}"
+        
+        return f"{timestamp} [{color}{level}{reset}] {message}"
+
+
+class NetworkErrorFilter(logging.Filter):
+    """Filter untuk mengurangi spam dari network error yang berulang"""
+    
+    def __init__(self, max_same_errors=5):
+        super().__init__()
+        self.error_cache = {}
+        self.max_same_errors = max_same_errors
+    
+    def filter(self, record):
+        """Return False untuk skip log, True untuk lanjutkan"""
+        
+        # Network error yang berulang dalam 60 detik, skip beberapa
+        if record.levelno >= logging.ERROR:
+            exc_info = record.exc_info
+            if exc_info:
+                exc_type = exc_info
+                exc_name = exc_type.__name__ if exc_type else "Unknown"
+                
+                # Jika error sama berulang, skip beberapa kali
+                if exc_name in self.error_cache:
+                    count, last_time = self.error_cache[exc_name]
+                    now = datetime.now(timezone.utc).timestamp()
+                    
+                    # Reset counter setelah 
+
+                    if now - last_time > 60:  # Reset setelah 60 detik
+                        self.error_cache[exc_name] = (1, now)
+                    else:
+                        self.error_cache[exc_name] = (count + 1, now)
+                        if count >= self.max_same_errors:
+                            return False  # Skip log ini
+                else:
+                    self.error_cache[exc_name] = (1, datetime.now(timezone.utc).timestamp())
+        
+        return True
+
+# ============================================================
+# === SETUP LOGGING (REPLACEMENT) ===
+# ============================================================
+_log_formatter = CompactFormatter()
+_file_handler = RotatingFileHandler(
     "bot.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
 )
 _file_handler.setFormatter(_log_formatter)
 _stream_handler = logging.StreamHandler()
 _stream_handler.setFormatter(_log_formatter)
 
+# Tambahkan filter untuk mengurangi spam
+network_filter = NetworkErrorFilter(max_same_errors=3)
+_stream_handler.addFilter(network_filter)
+_file_handler.addFilter(network_filter)
+
 logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _stream_handler])
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)  # Jika pakai urllib3
+
+logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _stream_handler])
 
 # ============================================================
 # === GLOBAL STATE ===
@@ -1148,7 +1277,7 @@ def main():
     app.add_handler(CommandHandler("shutdown",     cmd_shutdown))
 
     logging.info("╔══════════════════════════════════╗")
-    logging.info("║ 🌸 HANAYA BOT v4.6 (Smart Flood) ║")
+    logging.info("║ 🌸 HANAYA BOT v4.7 (Smart Flood) ║")
     logging.info(f"║  Daily Limit : {DAILY_LIMIT} Media/hari   ║")
     logging.info(f"║  Group Size  : {GROUP_SIZE} Media/kelompok  ║")
     logging.info(f"║  Max Pending : {MAX_QUEUE_SIZE} Media       ║")
