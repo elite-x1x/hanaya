@@ -1,52 +1,49 @@
-import os, logging
+import os
 from dotenv import load_dotenv
-from datetime import datetime, timezone
 
 load_dotenv()
 
-BOT_TOKEN      = os.getenv("BOT_F_LOKAL", "xxxx")
-TARGET_CHAT_ID = int(os.getenv("CHAT_ID_BEDUL", 1234))
-ADMIN_CHAT_ID  = int(os.getenv("CHAT_ID_ADMIN", 5678))
+# === BOT CONFIG ===
+BOT_TOKEN      = os.getenv("BOT_F_LOKAL", "")
+TARGET_CHAT_ID = int(os.getenv("CHAT_ID_BEDUL", 0))
+ADMIN_CHAT_ID  = int(os.getenv("CHAT_ID_ADMIN", 0))
 
-SUPERADMINS = [int(uid.strip()) for uid in os.getenv("SUPERADMINS", "").split(",") if uid.strip()]
-MODERATORS  = [int(uid.strip()) for uid in os.getenv("MODERATORS", "").split(",") if uid.strip()]
-ADMINS = {uid: "superadmin" for uid in SUPERADMINS}
-ADMINS.update({uid: "moderator" for uid in MODERATORS})
+if not BOT_TOKEN:
+    raise ValueError("❌ BOT_TOKEN tidak diatur di .env")
+if TARGET_CHAT_ID == 0:
+    raise ValueError("❌ CHAT_ID_TARGET tidak diatur di .env")
+if ADMIN_CHAT_ID == 0:
+    import logging
+    logging.warning("⚠️ ADMIN_CHAT_ID tidak diatur — flood alert dinonaktifkan")
 
-# Redis
-REDIS_HOST     = os.getenv("REDIS_HOST", "isi_host_anda")
+# === REDIS CONFIG ===
+REDIS_HOST     = os.getenv("REDIS_HOST", "")
 REDIS_PORT     = int(os.getenv("REDIS_PORT", 6379))
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "token_hanaya")
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 
-# Keys
-KEY_SENT        = "hanaya:sent"
-KEY_PENDING     = "hanaya:pending"
-KEY_DAILY_COUNT = "hanaya:daily_count"
-KEY_DAILY_DATE  = "hanaya:daily_date"
-KEY_FLOOD_CTRL  = "hanaya:flood_ctrl"
+# === RATE LIMIT SETTINGS ===
+DELAY_BETWEEN_SEND      = 2.0
+DELAY_RANDOM_MIN        = 0.5
+DELAY_RANDOM_MAX        = 2.5
+GROUP_SIZE              = 5
+DELAY_BETWEEN_GROUP_MIN = 20
+DELAY_BETWEEN_GROUP_MAX = 40
+WAIT_TIME               = 20
+BATCH_PAUSE_EVERY       = 30
+BATCH_PAUSE_MIN         = 300
+BATCH_PAUSE_MAX         = 600
+DAILY_LIMIT             = 2500
+MAX_RETRIES             = 3
+MAX_QUEUE_SIZE          = 7000
+AUTO_SAVE_INTERVAL      = 60
 
-# Limits
-DAILY_LIMIT = 1500
-GROUP_SIZE  = 5
-MAX_QUEUE_SIZE = 10000
-AUTO_SAVE_INTERVAL = 60
-WAIT_TIME = 20
-MAX_RETRIES = 2
+# === FLOOD CONTROL SETTINGS ===
+FLOOD_RANDOM_MIN     = 10
+FLOOD_RANDOM_MAX     = 30
+FLOOD_PENALTY_STEP   = 15
+FLOOD_MAX_PENALTY    = 300
+FLOOD_RESET_AFTER    = 600
+FLOOD_WARN_THRESHOLD = 3
 
-# Logging setup
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.FileHandler("bot.log", encoding="utf-8"), logging.StreamHandler()]
-)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("telegram").setLevel(logging.WARNING)
-
-# Global state
-pending_media    = []
-is_sending       = False
-daily_count      = 0
-daily_reset_date = datetime.now(timezone.utc).date()
-last_save_time   = datetime.now(timezone.utc)
-is_paused        = False
-local_sent       = set()
+# === TTL CONFIG ===
+SENT_TTL = 60 * 60 * 24 * 30  # 30 hari
