@@ -247,7 +247,7 @@ def r_get_json(key: str) -> dict | None:
             return json.loads(raw)
     except json.JSONDecodeError as e:
         logging.error(f"Redis JSON decode error [{key}]: {e}")
-        # ✅ FIX #5 — Proper error handling dengan logging eksplisit
+        # Proper error handling dengan logging eksplisit
         try:
             redis_client.delete(key)
             logging.warning(f"🗑️ Key korup berhasil dihapus: {key}")
@@ -421,7 +421,7 @@ class SmartFloodController:
 # ============================================================
 # === LOCAL SENT HELPERS ===
 # ============================================================
-# ✅ FIX #3 — Eviction konsisten, max_size parameter eksplisit
+# Eviction konsisten, max_size parameter eksplisit
 def _local_sent_add(key: str, max_size: int = MAX_LOCAL_SENT) -> None:
     """Tambah ke local_sent dengan eviction FIFO jika melebihi batas."""
     if key in local_sent:
@@ -610,7 +610,7 @@ def mark_sent(fingerprint: dict) -> bool:
         logging.debug(f"✅ Marked sent: {file_id[:8]}...")
     except Exception as e:
         logging.error(f"❌ Gagal mark sent (Redis): {e}")
-        # ✅ FIX #3 — Gunakan _local_sent_add yang sudah fixed
+        # Gunakan _local_sent_add yang sudah fixed
         _local_sent_add(file_id)
         _local_sent_add(fp_hash)
         success = False
@@ -767,7 +767,7 @@ async def queue_worker(bot):
             logging.warning(f"⛔ Daily limit tercapai ({DAILY_LIMIT})")
             continue
 
-        # ✅ FIX #2 — Atomic batch grab dalam satu lock, cegah race condition
+        # Atomic batch grab dalam satu lock, cegah race condition
         async with sending_lock:
             if is_sending:
                 continue
@@ -806,7 +806,7 @@ async def queue_worker(bot):
                 group_num = (i // GROUP_SIZE) + 1
                 total_grp = (total + GROUP_SIZE - 1) // GROUP_SIZE
 
-                # ✅ FIX #2 — Snapshot pending untuk cek duplikat (hindari iterasi concurrent)
+                # Snapshot pending untuk cek duplikat (hindari iterasi concurrent)
                 async with sending_lock:
                     pending_snapshot = pending_media.copy()
 
@@ -824,7 +824,7 @@ async def queue_worker(bot):
                         bot, TARGET_CHAT_ID, items, ADMIN_CHAT_ID
                     )
                     if success:
-                        # ✅ FIX #4 — Update daily_count dalam lock, baca config dalam lock
+                        #  Update daily_count dalam lock, baca config dalam lock
                         async with sending_lock:
                             daily_count += len(items)
                         sent_count += len(items)
@@ -840,7 +840,7 @@ async def queue_worker(bot):
                             pending_media.extend(group)
                         save_pending()
 
-                # ✅ FIX #4 — Baca DELAY_BETWEEN_SEND dengan config_lock
+                # Baca DELAY_BETWEEN_SEND dengan config_lock
                 async with config_lock:
                     current_delay = DELAY_BETWEEN_SEND
                 delay = current_delay + random.uniform(DELAY_RANDOM_MIN, DELAY_RANDOM_MAX)
@@ -1004,7 +1004,7 @@ async def cmd_resetdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
     await notify_admins(context.bot, msg)
 
-# ✅ FIX #1 — _flatten_arg: infinite loop diperbaiki dengan arg
+# — _flatten_arg: infinite loop diperbaiki dengan arg
 def _flatten_arg(arg) -> str | None:
     """Flatten nested list/tuple menjadi string."""
     while isinstance(arg, (list, tuple)):
@@ -1032,7 +1032,7 @@ async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Limit harus antara 1-5000")
             return
 
-        # ✅ FIX #4 — Gunakan config_lock untuk update DAILY_LIMIT
+        # Gunakan config_lock untuk update DAILY_LIMIT
         async with config_lock:
             global DAILY_LIMIT
             DAILY_LIMIT = new_limit
@@ -1064,7 +1064,7 @@ async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Delay harus antara 0.1-10.0 detik")
             return
 
-        # ✅ FIX #4 — Gunakan config_lock untuk update DELAY_BETWEEN_SEND
+        # Gunakan config_lock untuk update DELAY_BETWEEN_SEND
         async with config_lock:
             global DELAY_BETWEEN_SEND
             DELAY_BETWEEN_SEND = new_delay
@@ -1149,9 +1149,9 @@ def main():
 
     logging.info("╔══════════════════════════════════╗")
     logging.info("║ 🌸 HANAYA BOT v4.6 (Smart Flood) ║")
-    logging.info(f"║  Daily Limit : {DAILY_LIMIT} video/hari   ║")
-    logging.info(f"║  Group Size  : {GROUP_SIZE} video/kelompok  ║")
-    logging.info(f"║  Max Pending : {MAX_QUEUE_SIZE} video       ║")
+    logging.info(f"║  Daily Limit : {DAILY_LIMIT} Media/hari   ║")
+    logging.info(f"║  Group Size  : {GROUP_SIZE} Media/kelompok  ║")
+    logging.info(f"║  Max Pending : {MAX_QUEUE_SIZE} Media       ║")
     logging.info("╚══════════════════════════════════╝")
 
     app.run_polling(
