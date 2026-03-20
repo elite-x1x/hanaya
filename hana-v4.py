@@ -167,10 +167,11 @@ class CompactFormatter(logging.Formatter):
             'OSError',
             'socket.error'
         ]
-        
+
         if record.exc_info:
             exc_type = record.exc_info
             exc_name = exc_type.__name__ if exc_type else ""
+            
             return any(err in exc_name for err in network_errors)
         
         return any(err in record.getMessage() for err in network_errors)
@@ -250,9 +251,7 @@ _file_handler.addFilter(network_filter)
 logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _stream_handler])
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
-logging.getLogger("urllib3").setLevel(logging.WARNING)  # Jika pakai urllib3
-
-logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _stream_handler])
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 # ============================================================
 # === GLOBAL STATE ===
@@ -262,19 +261,19 @@ is_sending:       bool        = False
 daily_count:      int         = 0
 daily_reset_date              = datetime.now(timezone.utc).date()
 last_save_time                = datetime.now(timezone.utc)
-sending_lock                  = asyncio.Lock()
+sending_lock                  = None  # Akan diinisialisasi di async context
 is_paused:        bool        = False
 local_sent:       OrderedDict = OrderedDict()
 MAX_LOCAL_SENT                = 5000
-flood_ctrl                    = None
-config_lock                   = asyncio.Lock()
+flood_ctrl:       dict | None = None
+config_lock                  = None  # Akan diinisialisasi di async context
 
 # ============================================================
 # === REDIS CONNECTION ===
 # ============================================================
 redis_client: redis.Redis | None = None
 
-def connect_redis() -> None:
+async def connect_redis_async() -> None:
     global redis_client
     if not REDIS_HOST:
         logging.warning("⚠️ REDIS_HOST kosong, skip koneksi Redis")
@@ -298,12 +297,12 @@ def connect_redis() -> None:
             return
         except Exception as e:
             logging.error(f"❌ Redis gagal (percobaan {attempt+1}/5): {e}")
-            import time; time.sleep(5)
+            await asyncio.sleep(5)  # Non-blocking
 
     logging.error("❌ Redis tidak bisa terhubung, fallback ke lokal")
     redis_client = None
 
-def ensure_redis() -> None:
+async def ensure_redis() -> None:
     global redis_client
     if redis_client is None:
         return
@@ -311,45 +310,45 @@ def ensure_redis() -> None:
         redis_client.ping()
     except Exception:
         logging.warning("⚠️ Redis terputus, mencoba reconnect...")
-        connect_redis()
+        await connect_redis_async()
 
 # ============================================================
 # === REDIS HELPERS ===
 # ============================================================
-def r_get(key: str) -> str | None:
+async def r_get(key: str) -> str | None:
     if redis_client is None:
         return None
     try:
-        ensure_redis()
+        await ensure_redis()
         return redis_client.get(key)
     except Exception as e:
         logging.error(f"Redis GET error [{key}]: {e}")
         return None
 
-def r_set(key: str, value: str) -> None:
+async def r_set(key: str, value: str) -> None:
     if redis_client is None:
         return
     try:
-        ensure_redis()
+        await ensure_redis()
         redis_client.set(key, value)
     except Exception as e:
         logging.error(f"Redis SET error [{key}]: {e}")
 
-def r_sismember(key: str, value: str) -> bool:
+async def r_sismember(key: str, value: str) -> bool:
     if redis_client is None:
         return False
     try:
-        ensure_redis()
+        await ensure_redis()
         return bool(redis_client.sismember(key, value))
     except Exception as e:
         logging.error(f"Redis SISMEMBER error [{key}]: {e}")
         return False
 
-def r_sadd_with_ttl(key: str, value: str, ttl: int) -> None:
+async def r_sadd_with_ttl(key: str, value: str, ttl: int) -> None:
     if redis_client is None:
         return
     try:
-        ensure_redis()
+        await ensure_redis()
         pipe = redis_client.pipeline()
         pipe.sadd(key, value)
         pipe.expire(key, ttl)
@@ -357,26 +356,26 @@ def r_sadd_with_ttl(key: str, value: str, ttl: int) -> None:
     except Exception as e:
         logging.error(f"Redis SADD+TTL error [{key}]: {e}")
 
-def r_set_json(key: str, data: dict) -> None:
+async def r_set_json(key: str, data: dict) -> None:
     if redis_client is None:
         return
     try:
-        ensure_redis()
+        await ensure_redis()
         redis_client.set(key, json.dumps(data))
     except Exception as e:
         logging.error(f"Redis SET JSON error [{key}]: {e}")
 
-def r_get_json(key: str) -> dict | None:
+async def r_get_json(key: str) -> dict | None:
     if redis_client is None:
         return None
     try:
-        ensure_redis()
+        await ensure_redis()
         raw = redis_client.get(key)
         if raw:
             return json.loads(raw)
+        return None
     except json.JSONDecodeError as e:
         logging.error(f"Redis JSON decode error [{key}]: {e}")
-        # Proper error handling dengan logging eksplisit
         try:
             redis_client.delete(key)
             logging.warning(f"🗑️ Key korup berhasil dihapus: {key}")
@@ -421,7 +420,8 @@ class SmartFloodController:
         self.group_delay_min: float           = float(DELAY_BETWEEN_GROUP_MIN)
         self.group_delay_max: float           = float(DELAY_BETWEEN_GROUP_MAX)
 
-    def _parse_last_flood_time(self, value) -> datetime | None:
+    @staticmethod
+    def _parse_last_flood_time(value) -> datetime | None:
         if value is None:
             return None
         if isinstance(value, datetime):
@@ -440,7 +440,7 @@ class SmartFloodController:
         logging.warning(f"⚠️ Tipe last_flood_time tidak dikenal: {type(value)}")
         return None
 
-    def record_flood(self, suggested_wait: int) -> float:
+    async def record_flood(self, suggested_wait: int) -> float:
         now = datetime.now(timezone.utc)
 
         if self.last_flood_time is not None:
@@ -477,10 +477,10 @@ class SmartFloodController:
             f"   └─ Delay group baru : {self.group_delay_min:.0f}s - {self.group_delay_max:.0f}s"
         )
 
-        self.save_state()
+        await self.save_state()
         return total_wait
 
-    def record_success(self) -> None:
+    async def record_success(self) -> None:
         if self.penalty > 0:
             self.penalty = max(0.0, self.penalty - 5.0)
         if self.flood_count > 0:
@@ -496,7 +496,7 @@ class SmartFloodController:
                 float(DELAY_BETWEEN_GROUP_MAX), self.group_delay_max - 3.0
             )
         self.is_cooling = False
-        self.save_state()
+        await self.save_state()
 
     def get_group_delay(self) -> float:
         return random.uniform(self.group_delay_min, self.group_delay_max)
@@ -541,16 +541,15 @@ class SmartFloodController:
             instance = cls()
         return instance
 
-    def save_state(self) -> None:
+    async def save_state(self) -> None:
         try:
-            r_set_json(KEY_FLOOD_CTRL, self.to_dict())
+            await r_set_json(KEY_FLOOD_CTRL, self.to_dict())
         except Exception as e:
             logging.error(f"❌ Gagal save flood ctrl state: {e}")
 
 # ============================================================
 # === LOCAL SENT HELPERS ===
 # ============================================================
-# Eviction konsisten, max_size parameter eksplisit
 def _local_sent_add(key: str, max_size: int = MAX_LOCAL_SENT) -> None:
     """Tambah ke local_sent dengan eviction FIFO jika melebihi batas."""
     if key in local_sent:
@@ -562,111 +561,114 @@ def _local_sent_add(key: str, max_size: int = MAX_LOCAL_SENT) -> None:
 # ============================================================
 # === LOAD & SAVE ===
 # ============================================================
-def load_all() -> None:
+async def load_all() -> None:
     global pending_media, daily_count, daily_reset_date, flood_ctrl
 
-    # Load pending media
-    try:
-        raw = r_get(KEY_PENDING)
-        if raw:
-            pending_media = json.loads(raw)
-        else:
+    async with config_lock:
+        # Load pending media
+        try:
+            raw = await r_get(KEY_PENDING)
+            if raw:
+                pending_media = json.loads(raw)
+            else:
+                pending_media = []
+        except (json.JSONDecodeError, TypeError) as e:
+            logging.error(f"❌ Gagal load pending: {e}")
             pending_media = []
-    except (json.JSONDecodeError, TypeError) as e:
-        logging.error(f"❌ Gagal load pending: {e}")
-        pending_media = []
 
-    # Load daily count
-    try:
-        count_str  = r_get(KEY_DAILY_COUNT)
-        date_str   = r_get(KEY_DAILY_DATE)
-        today      = datetime.now(timezone.utc).date()
-        saved_date = (
-            datetime.strptime(date_str, "%Y-%m-%d").date()
-            if date_str else today
-        )
-        daily_count      = int(count_str) if count_str and saved_date == today else 0
-        daily_reset_date = today
-    except (ValueError, TypeError) as e:
-        logging.error(f"❌ Gagal load daily count: {e}")
-        daily_count      = 0
-        daily_reset_date = datetime.now(timezone.utc).date()
+        # Load daily count
+        try:
+            count_str  = await r_get(KEY_DAILY_COUNT)
+            date_str   = await r_get(KEY_DAILY_DATE)
+            today      = datetime.now(timezone.utc).date()
+            saved_date = (
+                datetime.strptime(date_str, "%Y-%m-%d").date()
+                if date_str else today
+            )
+            daily_count      = int(count_str) if count_str and saved_date == today else 0
+            daily_reset_date = today
+        except (ValueError, TypeError) as e:
+            logging.error(f"❌ Gagal load daily count: {e}")
+            daily_count      = 0
+            daily_reset_date = datetime.now(timezone.utc).date()
 
-    # Load flood controller
-    try:
-        flood_data = r_get_json(KEY_FLOOD_CTRL)
-        if flood_data:
-            flood_ctrl = SmartFloodController.from_dict(flood_data)
-            logging.info("🔄 Flood control state loaded dari Redis")
-        else:
+        # Load flood controller
+        try:
+            flood_data = await r_get_json(KEY_FLOOD_CTRL)
+            if flood_data:
+                flood_ctrl = SmartFloodController.from_dict(flood_data)
+                logging.info("🔄 Flood control state loaded dari Redis")
+            else:
+                flood_ctrl = SmartFloodController()
+                logging.info("✅ Flood control state baru dibuat")
+        except Exception as e:
+            logging.warning(f"⚠️ Gagal load flood control: {e}")
             flood_ctrl = SmartFloodController()
-            logging.info("✅ Flood control state baru dibuat")
-    except Exception as e:
-        logging.warning(f"⚠️ Gagal load flood control: {e}")
-        flood_ctrl = SmartFloodController()
 
-    # Load daily limit
+        # Load daily limit
+        try:
+            limit_str = await r_get(KEY_DAILY_LIMIT)
+            if limit_str:
+                global DAILY_LIMIT
+                DAILY_LIMIT = int(limit_str)
+        except (ValueError, TypeError) as e:
+            logging.warning(f"⚠️ Gagal load daily limit: {e}")
+
+        # Load send delay
+        try:
+            delay_str = await r_get(KEY_SEND_DELAY)
+            if delay_str:
+                global DELAY_BETWEEN_SEND
+                DELAY_BETWEEN_SEND = float(delay_str)
+        except (ValueError, TypeError) as e:
+            logging.warning(f"⚠️ Gagal load send delay: {e}")
+
+        logging.info(
+            f"📂 Data dimuat | Pending: {len(pending_media)} | "
+            f"Daily: {daily_count}/{DAILY_LIMIT} | "
+            f"Flood: {flood_ctrl.get_status()}"
+        )
+
+async def save_pending() -> None:
     try:
-        limit_str = r_get(KEY_DAILY_LIMIT)
-        if limit_str:
-            global DAILY_LIMIT
-            DAILY_LIMIT = int(limit_str)
-    except (ValueError, TypeError) as e:
-        logging.warning(f"⚠️ Gagal load daily limit: {e}")
-
-    # Load send delay
-    try:
-        delay_str = r_get(KEY_SEND_DELAY)
-        if delay_str:
-            global DELAY_BETWEEN_SEND
-            DELAY_BETWEEN_SEND = float(delay_str)
-    except (ValueError, TypeError) as e:
-        logging.warning(f"⚠️ Gagal load send delay: {e}")
-
-    logging.info(
-        f"📂 Data dimuat | Pending: {len(pending_media)} | "
-        f"Daily: {daily_count}/{DAILY_LIMIT} | "
-        f"Flood: {flood_ctrl.get_status()}"
-    )
-
-def save_pending() -> None:
-    try:
-        r_set(KEY_PENDING, json.dumps(pending_media))
+        await r_set(KEY_PENDING, json.dumps(pending_media))
     except Exception as e:
         logging.error(f"❌ Gagal save pending: {e}")
 
-def save_daily() -> None:
+async def save_daily() -> None:
     try:
-        r_set(KEY_DAILY_COUNT, str(daily_count))
-        r_set(KEY_DAILY_DATE, str(daily_reset_date))
+        await r_set(KEY_DAILY_COUNT, str(daily_count))
+        await r_set(KEY_DAILY_DATE, str(daily_reset_date))
     except Exception as e:
         logging.error(f"❌ Gagal save daily: {e}")
 
-def save_flood_ctrl() -> None:
+async def save_flood_ctrl() -> None:
     try:
         if flood_ctrl:
-            r_set_json(KEY_FLOOD_CTRL, flood_ctrl.to_dict())
+            await r_set_json(KEY_FLOOD_CTRL, flood_ctrl.to_dict())
     except Exception as e:
         logging.error(f"❌ Gagal save flood ctrl: {e}")
 
-def save_daily_limit() -> None:
+async def save_daily_limit() -> None:
     try:
-        r_set(KEY_DAILY_LIMIT, str(DAILY_LIMIT))
+        await r_set(KEY_DAILY_LIMIT, str(DAILY_LIMIT))
     except Exception as e:
         logging.error(f"❌ Gagal save daily limit: {e}")
 
-def save_send_delay() -> None:
+async def save_send_delay() -> None:
     try:
-        r_set(KEY_SEND_DELAY, str(DELAY_BETWEEN_SEND))
+        await r_set(KEY_SEND_DELAY, str(DELAY_BETWEEN_SEND))
     except Exception as e:
         logging.error(f"❌ Gagal save send delay: {e}")
 
-def save_all() -> None:
-    save_pending()
-    save_daily()
-    save_flood_ctrl()
-    save_daily_limit()
-    save_send_delay()
+async def save_all() -> None:
+    await asyncio.gather(
+        save_pending(),
+        save_daily(),
+        save_flood_ctrl(),
+        save_daily_limit(),
+        save_send_delay()
+    )
 
 # ============================================================
 # === DUPLIKAT CHECK ===
@@ -685,7 +687,7 @@ def get_fingerprint(msg) -> dict | None:
         'timestamp': datetime.now(timezone.utc).isoformat()
     }
 
-def is_duplicate(fingerprint: dict, pending_snapshot: list | None = None) -> bool:
+async def is_duplicate(fingerprint: dict, pending_snapshot: list | None = None) -> bool:
     """
     Cek duplikat dengan 3 lapis.
     pending_snapshot: snapshot list pending (aman dari concurrent modification)
@@ -699,10 +701,10 @@ def is_duplicate(fingerprint: dict, pending_snapshot: list | None = None) -> boo
     # Lapis 1: Redis
     if redis_client:
         try:
-            if r_sismember(KEY_SENT, file_id):
+            if await r_sismember(KEY_SENT, file_id):
                 logging.debug(f"✅ Duplikat (file_id) di Redis: {file_id[:8]}...")
                 return True
-            if r_sismember(KEY_SENT, fp_hash):
+            if await r_sismember(KEY_SENT, fp_hash):
                 logging.debug(f"✅ Duplikat (hash) di Redis: {fp_hash[:8]}...")
                 return True
         except Exception as e:
@@ -725,37 +727,37 @@ def is_duplicate(fingerprint: dict, pending_snapshot: list | None = None) -> boo
 
     return False
 
-def mark_sent(fingerprint: dict) -> bool:
+async def mark_sent(fingerprint: dict) -> None:
+    """
+    Mark video sebagai sudah dikirim.
+    Jika Redis gagal, fallback ke local_sent.
+    """
     if not fingerprint:
-        return False
+        return
 
     file_id = fingerprint.get('file_id', '')
     fp_hash = make_hash(fingerprint)
-    success = True
 
     try:
-        r_sadd_with_ttl(KEY_SENT, file_id, SENT_TTL)
-        r_sadd_with_ttl(KEY_SENT, fp_hash, SENT_TTL)
-        logging.debug(f"✅ Marked sent: {file_id[:8]}...")
+        await r_sadd_with_ttl(KEY_SENT, file_id, SENT_TTL)
+        await r_sadd_with_ttl(KEY_SENT, fp_hash, SENT_TTL)
+        logging.debug(f"✅ Marked sent (Redis): {file_id[:8]}...")
     except Exception as e:
-        logging.error(f"❌ Gagal mark sent (Redis): {e}")
-        # Gunakan _local_sent_add yang sudah fixed
+        logging.warning(f"⚠️ Redis mark_sent error, fallback ke local: {e}")
         _local_sent_add(file_id)
         _local_sent_add(fp_hash)
-        success = False
-
-    return success
 
 # ============================================================
 # === DAILY RESET ===
 # ============================================================
-def check_daily_reset() -> None:
+async def check_daily_reset() -> None:
     global daily_count, daily_reset_date
     today = datetime.now(timezone.utc).date()
     if today != daily_reset_date:
         logging.info(f"🔄 Reset harian | Kemarin terkirim: {daily_count}")
         daily_count      = 0
         daily_reset_date = today
+        await save_daily()
 
 # ============================================================
 # === KIRIM MEDIA GROUP ===
@@ -780,7 +782,7 @@ async def send_media_group_with_retry(
                 timeout=timeout
             )
 
-            flood_ctrl.record_success()
+            await flood_ctrl.record_success()
             return True
 
         except asyncio.TimeoutError:
@@ -796,7 +798,7 @@ async def send_media_group_with_retry(
 
             if "Flood control" in err or "Too Many Requests" in err:
                 suggested  = parse_retry_after(err)
-                total_wait = flood_ctrl.record_flood(suggested)
+                total_wait = await flood_ctrl.record_flood(suggested)
 
                 if (
                     flood_ctrl.flood_count >= FLOOD_WARN_THRESHOLD
@@ -850,20 +852,20 @@ async def send_media_group_with_retry(
                 logging.warning(f"⚠️ File tidak valid, dilewati: {err[:100]}")
                 return False
 
-            else:
-                base  = min(60, (2 ** attempt) * 5)
-                extra = random.uniform(5, 20)
-                wait  = base + extra
-                logging.error(
-                    f"❌ Error tidak dikenal (attempt {attempt+1}/{MAX_RETRIES})\n"
-                    f"   ├─ Error : {err[:150]}\n"
-                    f"   └─ Tunggu: {wait:.1f}s"
-                )
-                await asyncio.sleep(wait)
+                else:
+                    base  = min(60, (2 ** attempt) * 5)
+                    extra = random.uniform(5, 20)
+                    wait  = base + extra
+                    logging.error(
+                        f"❌ Error tidak dikenal (attempt {attempt+1}/{MAX_RETRIES})\n"
+                        f"   ├─ Error : {err[:150]}\n"
+                        f"   └─ Tunggu: {wait:.1f}s"
+                    )
+                    await asyncio.sleep(wait)
 
-                if attempt == MAX_RETRIES - 1:
-                    logging.error(f"💀 Gagal total setelah {MAX_RETRIES} percobaan")
-                    return False
+                    if attempt == MAX_RETRIES - 1:
+                        logging.error(f"💀 Gagal total setelah {MAX_RETRIES} percobaan")
+                        return False
 
     return False
 
@@ -879,11 +881,11 @@ async def queue_worker(bot):
 
         # Auto save berkala
         now = datetime.now(timezone.utc)
-        if (now - last_save_time).seconds >= AUTO_SAVE_INTERVAL:
-            save_all()
+        if (now - last_save_time).total_seconds() >= AUTO_SAVE_INTERVAL:
+            await save_all()
             last_save_time = now
 
-        check_daily_reset()
+        await check_daily_reset()
 
         if is_paused:
             logging.info("⏸️ Worker sedang dijeda, menunggu resume...")
@@ -906,12 +908,12 @@ async def queue_worker(bot):
                 overflow      = len(pending_media) - int(MAX_QUEUE_SIZE * 0.95)
                 removed       = pending_media[:overflow]
                 pending_media = pending_media[overflow:]
-                save_pending()
+                await save_pending()
                 logging.warning(f"⚠️ Pending overflow: removed {len(removed)} items")
 
             batch = pending_media.copy()
             pending_media.clear()
-            save_pending()
+            await save_pending()
 
         total      = len(batch)
         sent_count = 0
@@ -922,12 +924,12 @@ async def queue_worker(bot):
             )
 
             for i in range(0, total, GROUP_SIZE):
-                check_daily_reset()
+                await check_daily_reset()
 
                 if daily_count >= DAILY_LIMIT:
                     async with sending_lock:
                         pending_media.extend(batch[i:])
-                    save_pending()
+                    await save_pending()
                     logging.warning(f"⛔ Limit tercapai, {total - i} video ditunda")
                     break
 
@@ -941,10 +943,9 @@ async def queue_worker(bot):
 
                 items = []
                 for file_id, media_type, fp in group:
-                    if not is_duplicate(fp, pending_snapshot):
+                    if not await is_duplicate(fp, pending_snapshot):
                         items.append((file_id, media_type))
-                        if not mark_sent(fp):
-                            logging.warning(f"⚠️ Gagal menandai {file_id} sebagai sent")
+                        await mark_sent(fp)
                     else:
                         logging.info(f"ℹ️ Skip duplicate: {file_id[:8]}...")
 
@@ -952,22 +953,22 @@ async def queue_worker(bot):
                     success = await send_media_group_with_retry(
                         bot, TARGET_CHAT_ID, items, ADMIN_CHAT_ID
                     )
-                    if success:
-                        #  Update daily_count dalam lock, baca config dalam lock
-                        async with sending_lock:
-                            daily_count += len(items)
-                        sent_count += len(items)
-                        save_daily()
-                        for file_id, _, fp in group:
-                            logging.info(
-                                f"✅ Terkirim: {file_id[:8]}... | "
-                                f"{fp['width']}x{fp['height']} | {fp['duration']}s"
-                            )
-                    else:
-                        logging.error(f"❌ Gagal kirim group {group_num}/{total_grp}")
-                        async with sending_lock:
-                            pending_media.extend(group)
-                        save_pending()
+                        if success:
+                            # Update daily_count dalam lock
+                            async with sending_lock:
+                                daily_count += len(items)
+                            sent_count += len(items)
+                            await save_daily()
+                            for file_id, _, fp in group:
+                                logging.info(
+                                    f"✅ Terkirim: {file_id[:8]}... | "
+                                    f"{fp['width']}x{fp['height']} | {fp['duration']}s"
+                                )
+                        else:
+                            logging.error(f"❌ Gagal kirim group {group_num}/{total_grp}")
+                            async with sending_lock:
+                                pending_media.extend(group)
+                            await save_pending()
 
                 # Baca DELAY_BETWEEN_SEND dengan config_lock
                 async with config_lock:
@@ -992,13 +993,13 @@ async def queue_worker(bot):
             if remaining:
                 async with sending_lock:
                     pending_media.extend(remaining)
-                save_pending()
+                await save_pending()
 
         finally:
             async with sending_lock:
                 is_sending = False
 
-            save_all()
+            await save_all()
 
             try:
                 total_sent    = redis_client.scard(KEY_SENT) if redis_client else len(local_sent)
@@ -1025,7 +1026,7 @@ async def forward_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not fp:
         return
 
-    if is_duplicate(fp):
+    if await is_duplicate(fp):
         logging.info(
             f"❌ Duplikat: {fp['file_id'] [:8]}... | "
             f"{fp['width']}x{fp['height']} | {fp['duration']}s"
@@ -1037,13 +1038,21 @@ async def forward_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     async with sending_lock:
         pending_media.append((file_id, media_type, fp))
-        save_pending()
+        await save_pending()
         logging.info(
             f"⏳ Pending: {file_id[:8]}... | {fp['width']}x{fp['height']} | {fp['duration']}s"
         )
 
+    try:
+        if redis_client:
+            total_sent = redis_client.scard(KEY_SENT)
+        else:
+            total_sent = len(local_sent)
+    except Exception as e:
+        logging.warning(f"⚠️ Gagal ambil total_sent: {e}")
+        total_sent = len(local_sent)
+
     total_pending = len(pending_media)
-    total_sent    = redis_client.scard(KEY_SENT) if redis_client else len(local_sent)
     logging.info(f"📊 Total: Terkirim={total_sent} | Pending={total_pending} | Failed=0")
 
 # ============================================================
@@ -1065,9 +1074,13 @@ def is_moderator(update: Update) -> bool:
 async def notify_admins(bot, text: str):
     for admin_id in ADMINS:
         try:
-            await bot.send_message(chat_id=admin_id, text=f"[ADMIN ACTION] {text}")
+            await bot.send_message(
+                chat_id=admin_id,
+                text=f"[ADMIN ACTION] {text}",
+                parse_mode="Markdown"
+            )
         except Exception as e:
-            logging.warning(f"Gagal kirim notifikasi ke {admin_id}: {e}")
+            logging.warning(f"⚠️ Gagal kirim notifikasi ke {admin_id}: {e}")
 
 # ============================================================
 # === ADMIN COMMANDS ===
@@ -1076,7 +1089,12 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_moderator(update):
         await update.message.reply_text("❌ Anda bukan moderator/admin")
         return
-    total_sent    = redis_client.scard(KEY_SENT) if redis_client else len(local_sent)
+    try:
+        total_sent = redis_client.scard(KEY_SENT) if redis_client else len(local_sent)
+    except Exception as e:
+        logging.warning(f"⚠️ Gagal ambil total_sent: {e}")
+        total_sent = len(local_sent)
+    
     total_pending = len(pending_media)
     text = (
         f"📊 STATUS BOT\n"
@@ -1115,7 +1133,7 @@ async def cmd_flushpending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global pending_media
     async with sending_lock:
         pending_media.clear()
-    save_pending()
+    await save_pending()
     msg = f"🗑️ Pending queue dikosongkan oleh {update.effective_user.first_name}"
     await update.message.reply_text(msg)
     await notify_admins(context.bot, msg)
@@ -1128,18 +1146,18 @@ async def cmd_resetdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with sending_lock:
         daily_count      = 0
         daily_reset_date = datetime.now(timezone.utc).date()
-    save_daily()
+    await save_daily()
     msg = f"🔄 Daily counter direset oleh {update.effective_user.first_name}"
     await update.message.reply_text(msg)
     await notify_admins(context.bot, msg)
 
-# — _flatten_arg: infinite loop diperbaiki dengan arg
+# — _flatten_arg: infinite loop diperbaiki
 def _flatten_arg(arg) -> str | None:
     """Flatten nested list/tuple menjadi string."""
     while isinstance(arg, (list, tuple)):
         if len(arg) == 0:
             return None
-        arg = arg  # ✅ Ambil elemen pertama, bukan arg = arg
+        arg = arg  # Ambil elemen pertama, bukan arg = arg
     return str(arg).strip()
 
 async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1165,7 +1183,7 @@ async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         async with config_lock:
             global DAILY_LIMIT
             DAILY_LIMIT = new_limit
-        save_daily_limit()
+        await save_daily_limit()
         msg = f"⚙️ Daily limit diubah ke {DAILY_LIMIT} oleh {update.effective_user.first_name}"
         await update.message.reply_text(f"✅ {msg}")
         await notify_admins(context.bot, msg)
@@ -1197,7 +1215,7 @@ async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         async with config_lock:
             global DELAY_BETWEEN_SEND
             DELAY_BETWEEN_SEND = new_delay
-        save_send_delay()
+        await save_send_delay()
         msg = f"⚙️ Delay diubah ke {DELAY_BETWEEN_SEND:.1f}s oleh {update.effective_user.first_name}"
         await update.message.reply_text(f"✅ {msg}")
         await notify_admins(context.bot, msg)
@@ -1213,7 +1231,7 @@ async def cmd_shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = f"🛑 Bot dimatikan oleh {update.effective_user.first_name}"
     await update.message.reply_text(msg)
     await notify_admins(context.bot, msg)
-    save_all()
+    await save_all()
     await context.application.stop()
     logging.info("✅ Bot berhenti dengan aman")
 
@@ -1221,13 +1239,25 @@ async def cmd_shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === STARTUP & SHUTDOWN ===
 # ============================================================
 async def on_startup(app):
-    connect_redis()
-    load_all()
+    global sending_lock, config_lock
+    
+    # Inisialisasi locks di async context
+    sending_lock = asyncio.Lock()
+    config_lock = asyncio.Lock()
+    
+    # Koneksi Redis
+    await connect_redis_async()
+    
+    # Load semua data
+    await load_all()
+    
+    # Mulai queue worker
     asyncio.create_task(queue_worker(app.bot))
+    
     logging.info("🚀 Bot siap!")
 
 async def on_shutdown(app):
-    save_all()
+    await save_all()
     logging.info("🛑 Bot berhenti, data tersimpan")
 
 # ============================================================
@@ -1235,19 +1265,44 @@ async def on_shutdown(app):
 # ============================================================
 def handle_shutdown(signum, frame):
     logging.info("⚠️ Shutdown signal diterima, menyimpan data...")
-    save_all()
-    logging.info("✅ Data tersimpan, bot berhenti")
     try:
         loop = asyncio.get_running_loop()
-        loop.stop()
+        # Buat task untuk save_all() secara async
+        asyncio.create_task(_async_shutdown())
     except RuntimeError:
+        # Tidak ada running loop, exit langsung
+        logging.info("✅ Data tersimpan, bot berhenti")
         sys.exit(0)
+
+async def _async_shutdown():
+    """Helper untuk shutdown async"""
+    try:
+        await save_all()
+        logging.info("✅ Data tersimpan, bot berhenti")
+    except Exception as e:
+        logging.error(f"❌ Error saat save_all(): {e}")
+    finally:
+        try:
+            loop = asyncio.get_running_loop()
+            loop.stop()
+        except RuntimeError:
+            sys.exit(0)
 
 # ============================================================
 # === ERROR HANDLER ===
 # ============================================================
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.error(f"Update {update} caused error {context.error}", exc_info=context.error)
+    """Handle errors dari update processing"""
+    error = context.error
+    if error is None:
+        return
+    
+    logging.error(
+        f"❌ Update caused error:\n"
+        f"   Update: {update}\n"
+        f"   Error: {error}",
+        exc_info=error if isinstance(error, Exception) else None
+    )
 
 # ============================================================
 # === MAIN ===
@@ -1283,10 +1338,17 @@ def main():
     logging.info(f"║  Max Pending : {MAX_QUEUE_SIZE} Media        ║")
     logging.info("╚══════════════════════════════════╝")
 
-    app.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True
-    )
+    try:
+        app.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        )
+    except KeyboardInterrupt:
+        logging.info("⚠️ Keyboard interrupt diterima")
+    except Exception as e:
+        logging.error(f"❌ Fatal error: {e}", exc_info=True)
+    finally:
+        logging.info("✅ Bot shutdown complete")
 
 if __name__ == "__main__":
     main()
