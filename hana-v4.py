@@ -953,22 +953,22 @@ async def queue_worker(bot):
                     success = await send_media_group_with_retry(
                         bot, TARGET_CHAT_ID, items, ADMIN_CHAT_ID
                     )
-                        if success:
-                            # Update daily_count dalam lock
-                            async with sending_lock:
-                                daily_count += len(items)
-                            sent_count += len(items)
-                            await save_daily()
-                            for file_id, _, fp in group:
-                                logging.info(
-                                    f"✅ Terkirim: {file_id[:8]}... | "
-                                    f"{fp['width']}x{fp['height']} | {fp['duration']}s"
-                                )
-                        else:
-                            logging.error(f"❌ Gagal kirim group {group_num}/{total_grp}")
-                            async with sending_lock:
-                                pending_media.extend(group)
-                            await save_pending()
+                    if success:
+                        # Update daily_count dalam lock
+                        async with sending_lock:
+                            daily_count += len(items)
+                        sent_count += len(items)
+                        await save_daily()
+                        for file_id, _, fp in group:
+                            logging.info(
+                                f"✅ Terkirim: {file_id[:8]}... | "
+                                f"{fp['width']}x{fp['height']} | {fp['duration']}s"
+                            )
+                    else:
+                        logging.error(f"❌ Gagal kirim group {group_num}/{total_grp}")
+                        async with sending_lock:
+                            pending_media.extend(group)
+                        await save_pending()
 
                 # Baca DELAY_BETWEEN_SEND dengan config_lock
                 async with config_lock:
@@ -1013,7 +1013,7 @@ async def queue_worker(bot):
                 logging.warning(f"⚠️ Gagal ambil stats akhir: {e}")
 
     logging.info("✅ Worker stopped")
-
+    
 # ============================================================
 # === HANDLER ===
 # ============================================================
