@@ -130,7 +130,6 @@ class CompactFormatter(logging.Formatter):
         if self._is_network_error(record):
             return self._format_network_error(record)
         
-    #    timestamp = datetime.fromtimestamp(record.created, tz=timezone.utc).strftime(
         timestamp = datetime.fromtimestamp(record.created).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
@@ -169,7 +168,7 @@ class CompactFormatter(logging.Formatter):
     
     @staticmethod
     def _format_network_error(record):
-    	timestamp = datetime.fromtimestamp(record.created, tz=timezone.utc).strftime(
+        timestamp = datetime.fromtimestamp(record.created, tz=timezone.utc).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         level = record.levelname
