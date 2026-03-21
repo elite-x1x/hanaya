@@ -64,9 +64,9 @@ WAIT_TIME               = 20
 BATCH_PAUSE_EVERY       = 30
 BATCH_PAUSE_MIN         = 300
 BATCH_PAUSE_MAX         = 600
-DAILY_LIMIT             = 1500
+DAILY_LIMIT             = 2500
 MAX_RETRIES             = 2
-MAX_QUEUE_SIZE          = 10000
+MAX_QUEUE_SIZE          = 7000
 AUTO_SAVE_INTERVAL      = 60
 
 # ============================================================
