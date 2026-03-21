@@ -14,10 +14,11 @@ from logging.handlers import RotatingFileHandler
 from telegram import Update, InputMediaVideo
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CommandHandler
 from dotenv import load_dotenv
-import redis.asyncio as aioredis  # ✅ Async Redis
+import redis.asyncio as aioredis
 
 load_dotenv()
 
+start_time = datetime.now(timezone.utc)
 # ============================================================
 # === KONFIGURASI UTAMA ===
 # ============================================================
@@ -901,11 +902,25 @@ async def queue_worker(bot) -> None:
                 await flood_ctrl.record_success()
                 await save_daily()
 
+                # Hitung delay yang akan digunakan
+                group_delay  = flood_ctrl.get_group_delay()
+                send_delay   = DELAY_BETWEEN_SEND + random.uniform(
+                    DELAY_RANDOM_MIN, DELAY_RANDOM_MAX
+                )
+                total_delay  = group_delay + send_delay
+
                 logging.info(
                     f"✅ Terkirim {len(media_items)} media | "
                     f"Daily: {daily_count}/{DAILY_LIMIT} | "
-                    f"Pending: {pending_queue.qsize()}"
+                    f"Pending: {pending_queue.qsize()} | "
+                    f"⏳ Tunggu: {total_delay:.1f}s"
                 )
+
+              #  logging.info(
+              #      f"✅ Terkirim {len(media_items)} media | "
+              #      f"Daily: {daily_count}/{DAILY_LIMIT} | "
+              #      f"Pending: {pending_queue.qsize()}"
+              #  )
             else:
                 # Kembalikan ke queue jika gagal
                 for file_id, media_type, fp_hash in media_items:
@@ -1031,6 +1046,17 @@ async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Health check"""
     await update.message.reply_text("🏓 Pong!")
 
+async def cmd_uptime(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_moderator(update):
+        await update.message.reply_text("❌ Akses ditolak")
+        return
+    now = datetime.now(timezone.utc)
+    uptime = now - start_time
+    hours, remainder = divmod(int(uptime.total_seconds()), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    text = f"⏱️ Bot sudah berjalan: {hours}h {minutes}m {seconds}s"
+    await update.message.reply_text(text)
+
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Tampilkan daftar command"""
     if not is_moderator(update):
@@ -1045,7 +1071,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "├ /status — Status bot\n"
         "├ /stats — Statistik realtime\n"
         "├ /pause — Jeda worker\n"
-        "└ /resume — Lanjutkan worker\n"
+        "├ /resume — Lanjutkan worker\n"
+        "└ /uptime — Lama bot berjalan\n"
     )
     if role == "superadmin":
         text += (
@@ -1054,7 +1081,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "├ /setdelay <n> — Set delay antar kirim (0.1-10.0)\n"
             "├ /flushpending — Kosongkan queue\n"
             "├ /resetdaily — Reset counter harian\n"
-            "├ /log — Lihat 15 baris log terakhir\n"
+            "├ /log — Lihat 15 baris log terakhir\n" 
             "└ /shutdown — Matikan bot\n"
         )
     await update.message.reply_text(text, parse_mode="Markdown")
@@ -1064,24 +1091,50 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text("❌ Akses ditolak")
         return
 
+    # Ambil total sent
     try:
         total_sent = await redis_client.scard(KEY_SENT) if redis_client else len(local_sent)
     except Exception:
         total_sent = len(local_sent)
 
+    queue_size   = pending_queue.qsize() if pending_queue else 0
     redis_status = "✅ Terhubung" if redis_client else "❌ Offline (mode lokal)"
     worker_status = "⏸️ Dijeda" if is_paused else ("🔄 Mengirim" if is_sending else "✅ Idle")
+    daily_pct    = (daily_count / DAILY_LIMIT * 100) if DAILY_LIMIT > 0 else 0
+    bar_filled   = int(daily_pct / 10)
+    bar          = "🟩" * bar_filled + "⬜" * (10 - bar_filled)
 
+    # Format waktu terakhir save
+    last_save_str = "N/A"
+    if last_save_time:
+        now = datetime.now(timezone.utc)
+        diff = now - last_save_time
+        if diff.total_seconds() < 60:
+            last_save_str = "Baru saja"
+        elif diff.total_seconds() < 3600:
+            last_save_str = f"{int(diff.total_seconds() // 60)} menit lalu"
+        else:
+            last_save_str = f"{int(diff.total_seconds() // 3600)} jam lalu"
+
+    # Flood status
+    flood_status = flood_ctrl.get_status() if flood_ctrl else "N/A"
+
+    # Format pesan
     text = (
-        f"📊 *STATUS BOT*\n"
-        f"├ Worker   : {worker_status}\n"
-        f"├ Pending  : {pending_queue.qsize() if pending_queue else 0}\n"
-        f"├ Terkirim : {total_sent}\n"
-        f"├ Daily    : {daily_count}/{DAILY_LIMIT}\n"
-        f"├ Delay    : {DELAY_BETWEEN_SEND:.1f}s\n"
-        f"├ Redis    : {redis_status}\n"
-        f"└ Flood    : {flood_ctrl.get_status() if flood_ctrl else 'N/A'}"
+        "📊 *STATUS BOT HANAYA v5.0*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🤖 *Worker*       : {worker_status}\n"
+        f"📦 *Pending*      : {queue_size} media\n"
+        f"📤 *Terkirim*     : {total_sent} media\n"
+        f"📅 *Daily*        : {daily_count}/{DAILY_LIMIT} ({daily_pct:.1f}%)\n"
+        f"    └─ {bar}\n"
+        f"⏱️ *Last Save*    : {last_save_str}\n"
+        f"📡 *Redis*        : {redis_status}\n"
+        f"⚡ *Flood Ctrl*   : {flood_status}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "💡 Gunakan /help untuk daftar command"
     )
+
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1339,6 +1392,7 @@ def main():
     app.add_handler(CommandHandler("setdelay", cmd_setdelay))
     app.add_handler(CommandHandler("log", cmd_log))
     app.add_handler(CommandHandler("shutdown", cmd_shutdown))
+    app.add_handler(CommandHandler("uptime", cmd_uptime))
 
     logging.info("╔══════════════════════════════════╗")
     logging.info("║ 🌸 HANAYA BOT v5.0 (Async Redis) ║")
