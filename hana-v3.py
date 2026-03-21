@@ -102,7 +102,7 @@ daily_count      = 0
 daily_reset_date = datetime.now(timezone.utc).date()
 last_save_time   = datetime.now(timezone.utc)
 sending_lock     = asyncio.Lock()
-flood_ctrl       = None  # ← diinisialisasi di load_all()
+flood_ctrl       = None
 
 # ============================================================
 # === REDIS CONNECTION ===
@@ -450,7 +450,6 @@ class SmartFloodController:
             'group_delay_max': self.group_delay_max
         }
 
-# Inisialisasi global — akan di-override di load_all()
 flood_ctrl = None
 
 # ============================================================
