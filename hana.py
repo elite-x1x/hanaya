@@ -22,8 +22,8 @@ start_time = datetime.now(timezone.utc)
 # ============================================================
 # === KONFIGURASI UTAMA ===
 # ============================================================
-BOT_TOKEN      = os.getenv("BOT_F_LOKAL", "")
-TARGET_CHAT_ID = int(os.getenv("CHAT_ID_BEDUL", 0))
+BOT_TOKEN      = os.getenv("BOT_WORKER_1", "")
+TARGET_CHAT_ID = int(os.getenv("CHAT_ID_TARGET", 0))
 ADMIN_CHAT_ID  = int(os.getenv("CHAT_ID_ADMIN", 0))
 
 if not BOT_TOKEN:
@@ -1390,7 +1390,7 @@ def main():
     app.add_handler(CommandHandler("shutdown", cmd_shutdown))
 
     logging.info("╔══════════════════════════════════╗")
-    logging.info("║ 🌸 HANAYA BOT v5.0 (Async Redis) ║")
+    logging.info("║  🌸 HANAYA BOT v5.0 (Worker 1)  ║")
     logging.info(f"║  Daily Limit : {DAILY_LIMIT} Media/hari   ║")
     logging.info(f"║  Group Size  : {GROUP_SIZE} Media/kelompok  ║")
     logging.info(f"║  Max Pending : {MAX_QUEUE_SIZE} Media        ║")
