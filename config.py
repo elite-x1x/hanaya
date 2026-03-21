@@ -1,27 +1,38 @@
 import os
 from dotenv import load_dotenv
-
+import json
 load_dotenv()
 
-# === BOT CONFIG ===
+# Bot & Chat
 BOT_TOKEN      = os.getenv("BOT_F_LOKAL", "")
 TARGET_CHAT_ID = int(os.getenv("CHAT_ID_BEDUL", 0))
 ADMIN_CHAT_ID  = int(os.getenv("CHAT_ID_ADMIN", 0))
 
-if not BOT_TOKEN:
-    raise ValueError("❌ BOT_TOKEN tidak diatur di .env")
-if TARGET_CHAT_ID == 0:
-    raise ValueError("❌ CHAT_ID_TARGET tidak diatur di .env")
-if ADMIN_CHAT_ID == 0:
-    import logging
-    logging.warning("⚠️ ADMIN_CHAT_ID tidak diatur — flood alert dinonaktifkan")
+# Admins
+def _parse_id_list(key: str) -> list[int]:
+    return [int(x.strip()) for x in os.getenv(key, "").split(",") if x.strip().lstrip("-").isdigit()]
 
-# === REDIS CONFIG ===
+ADMINS = {
+    **{uid: "superadmin" for uid in _parse_id_list("SUPERADMINS")},
+    **{uid: "moderator"  for uid in _parse_id_list("MODERATORS")},
+}
+
+# Redis
 REDIS_HOST     = os.getenv("REDIS_HOST", "")
 REDIS_PORT     = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 
-# === RATE LIMIT SETTINGS ===
+# Redis Keys
+KEY_SENT        = "hanaya:sent"
+KEY_PENDING     = "hanaya:pending"
+KEY_DAILY_COUNT = "hanaya:daily_count"
+KEY_DAILY_DATE  = "hanaya:daily_date"
+KEY_FLOOD_CTRL  = "hanaya:flood_ctrl"
+KEY_DAILY_LIMIT = "hanaya:daily_limit"
+KEY_SEND_DELAY  = "hanaya:send_delay"
+
+# Rate Limits
+SENT_TTL                = 60 * 60 * 24 * 30  # 30 hari
 DELAY_BETWEEN_SEND      = 2.0
 DELAY_RANDOM_MIN        = 0.5
 DELAY_RANDOM_MAX        = 2.5
@@ -37,13 +48,10 @@ MAX_RETRIES             = 3
 MAX_QUEUE_SIZE          = 7000
 AUTO_SAVE_INTERVAL      = 60
 
-# === FLOOD CONTROL SETTINGS ===
+# Flood Control
 FLOOD_RANDOM_MIN     = 10
 FLOOD_RANDOM_MAX     = 30
 FLOOD_PENALTY_STEP   = 15
 FLOOD_MAX_PENALTY    = 300
 FLOOD_RESET_AFTER    = 600
 FLOOD_WARN_THRESHOLD = 3
-
-# === TTL CONFIG ===
-SENT_TTL = 60 * 60 * 24 * 30  # 30 hari
