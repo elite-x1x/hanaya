@@ -129,59 +129,59 @@ class CompactFormatter(logging.Formatter):
     def format(self, record):
         if self._is_network_error(record):
             return self._format_network_error(record)
-        
-        timestamp = datetime.fromtimestamp(record.created, tz=timezone.utc).strftime(
+
+        timestamp = datetime.fromtimestamp(record.created).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
-        level = record.levelname
+        level   = record.levelname
         message = record.getMessage()
-        
-        color = self.COLORS.get(level, '')
-        reset = self.COLORS['RESET']
-        
-        if record.exc_info and record.levelno >= logging.ERROR:
-            exc_type, exc_value, _ = record.exc_info
-            exc_name = exc_type.__name__ if exc_type else "Unknown"
-            return f"{timestamp} [{color}{level}{reset}] {message}\n    └─ {exc_name}: {str(exc_value)[:150]}"
-        
+        color   = self.COLORS.get(level, '')
+        reset   = self.COLORS['RESET']
+
+        if record.exc_info and isinstance(record.exc_info, tuple):
+            exc_type  = record.exc_info
+            exc_value = record.exc_info
+            if exc_type and record.levelno >= logging.ERROR:
+                exc_name = exc_type.__name__
+                return (
+                    f"{timestamp} [{color}{level}{reset}] {message}\n"
+                    f"    └─ {exc_name}: {str(exc_value)[:150]}"
+                )
+
         return f"{timestamp} [{color}{level}{reset}] {message}"
     
     @staticmethod
     def _is_network_error(record):
         network_errors = [
-            'httpx.ReadError',
-            'httpx.ConnectError',
-            'httpx.TimeoutException',
-            'ConnectionError',
-            'TimeoutError',
-            'OSError',
-            'socket.error'
+            'httpx.ReadError', 'httpx.ConnectError',
+            'httpx.TimeoutException', 'ConnectionError',
+            'TimeoutError', 'OSError', 'socket.error'
         ]
 
-        if record.exc_info:
-            exc_type = record.exc_info if record.exc_info else None
+        if record.exc_info and isinstance(record.exc_info, tuple):
+            exc_type = record.exc_info
             exc_name = exc_type.__name__ if exc_type else ""
-            
             return any(err in exc_name for err in network_errors)
-        
+
         return any(err in record.getMessage() for err in network_errors)
     
     @staticmethod
     def _format_network_error(record):
-        timestamp = datetime.fromtimestamp(record.created, tz=timezone.utc).strftime(
+        timestamp = datetime.fromtimestamp(record.created).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
-        level = record.levelname
+        level   = record.levelname
         message = record.getMessage()
-        color = CompactFormatter.COLORS.get(level, '')
-        reset = CompactFormatter.COLORS['RESET']
-        
-        if record.exc_info:
-            exc_type, exc_value, _ = record.exc_info
-            exc_name = exc_type.__name__ if exc_type else "Unknown"
-            exc_msg = str(exc_value)[:100]
+        color   = CompactFormatter.COLORS.get(level, '')
+        reset   = CompactFormatter.COLORS['RESET']
+
+        if record.exc_info and isinstance(record.exc_info, tuple):
+            exc_type  = record.exc_info
+            exc_value = record.exc_info
+            exc_name  = exc_type.__name__ if exc_type else "Unknown"
+            exc_msg   = str(exc_value)[:100]
             return f"{timestamp} [{color}{level}{reset}] {exc_name}: {exc_msg}"
-        
+
         return f"{timestamp} [{color}{level}{reset}] {message}"
 
 
@@ -193,27 +193,27 @@ class NetworkErrorFilter(logging.Filter):
         self.max_same_errors = max_same_errors
     
     def filter(self, record):
-        
         if record.levelno >= logging.ERROR:
             exc_info = record.exc_info
-            if exc_info:
-                exc_type = exc_info  # ✅ Ambil type
+            if exc_info and isinstance(exc_info, tuple) and len(exc_info) >= 1:
+                exc_type = exc_info
                 exc_name = exc_type.__name__ if exc_type else "Unknown"
-                
+
                 if exc_name in self.error_cache:
                     count, last_time = self.error_cache[exc_name]
                     now = datetime.now(timezone.utc).timestamp()
-                     
 
-                    if now - last_time > 60:  # Reset setelah 60 detik
+                    if now - last_time > 60:
                         self.error_cache[exc_name] = (1, now)
                     else:
                         self.error_cache[exc_name] = (count + 1, now)
                         if count >= self.max_same_errors:
                             return False
                 else:
-                    self.error_cache[exc_name] = (1, datetime.now(timezone.utc).timestamp())
-        
+                    self.error_cache[exc_name] = (
+                        1, datetime.now(timezone.utc).timestamp()
+                    )
+
         return True
 
 # ============================================================
@@ -239,7 +239,7 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 # ============================================================
 # === GLOBAL STATE ===
 # ============================================================
-pending_queue: asyncio.Queue = None  # ✅ Async Queue
+pending_queue: asyncio.Queue = None
 is_sending:       bool        = False
 daily_count:      int         = 0
 daily_reset_date              = datetime.now(timezone.utc).date()
@@ -354,7 +354,7 @@ async def r_get_json(key: str) -> dict | None:
     try:
         await ensure_redis()
         raw = await redis_client.get(key)
-        if raw and raw.strip():  # ✅ Handle string kosong
+        if raw and raw.strip():
             return json.loads(raw)
         return None
     except json.JSONDecodeError as e:
@@ -916,11 +916,6 @@ async def queue_worker(bot) -> None:
                     f"⏳ Tunggu: {total_delay:.1f}s"
                 )
 
-              #  logging.info(
-              #      f"✅ Terkirim {len(media_items)} media | "
-              #      f"Daily: {daily_count}/{DAILY_LIMIT} | "
-              #      f"Pending: {pending_queue.qsize()}"
-              #  )
             else:
                 # Kembalikan ke queue jika gagal
                 for file_id, media_type, fp_hash in media_items:
@@ -1386,13 +1381,13 @@ def main():
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("pause", cmd_pause))
     app.add_handler(CommandHandler("resume", cmd_resume))
+    app.add_handler(CommandHandler("uptime", cmd_uptime))
     app.add_handler(CommandHandler("flushpending", cmd_flushpending))
     app.add_handler(CommandHandler("resetdaily", cmd_resetdaily))
     app.add_handler(CommandHandler("setlimit", cmd_setlimit))
     app.add_handler(CommandHandler("setdelay", cmd_setdelay))
     app.add_handler(CommandHandler("log", cmd_log))
     app.add_handler(CommandHandler("shutdown", cmd_shutdown))
-    app.add_handler(CommandHandler("uptime", cmd_uptime))
 
     logging.info("╔══════════════════════════════════╗")
     logging.info("║ 🌸 HANAYA BOT v5.0 (Async Redis) ║")
