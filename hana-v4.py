@@ -132,23 +132,19 @@ class CompactFormatter(logging.Formatter):
     }
     
     def format(self, record):
-        # Jangan tampilkan traceback panjang untuk network error yang berulang
         if self._is_network_error(record):
             return self._format_network_error(record)
         
-        # Format normal untuk log lainnya
         timestamp = datetime.fromtimestamp(record.created, tz=timezone.utc).strftime(
-            "%Y-%m-%d %H:%M:%S,%03d"
+            "%Y-%m-%d %H:%M:%S"
         )
         level = record.levelname
         message = record.getMessage()
         
-        # Tambahkan warna untuk terminal
         color = self.COLORS.get(level, '')
         reset = self.COLORS['RESET']
         
         if record.exc_info and record.levelno >= logging.ERROR:
-            # Tampilkan error singkat saja
             exc_type, exc_value, _ = record.exc_info
             exc_name = exc_type.__name__ if exc_type else "Unknown"
             return f"{timestamp} [{color}{level}{reset}] {message}\n    └─ {exc_name}: {str(exc_value)[:150]}"
@@ -157,7 +153,6 @@ class CompactFormatter(logging.Formatter):
     
     @staticmethod
     def _is_network_error(record):
-        """Deteksi network error yang sering terjadi"""
         network_errors = [
             'httpx.ReadError',
             'httpx.ConnectError',
@@ -178,9 +173,8 @@ class CompactFormatter(logging.Formatter):
     
     @staticmethod
     def _format_network_error(record):
-        """Format network error secara ringkas"""
         timestamp = datetime.fromtimestamp(record.created, tz=timezone.utc).strftime(
-            "%Y-%m-%d %H:%M:%S,%03d"
+            "%Y-%m-%d %H:%M:%S"
         )
         level = record.levelname
         message = record.getMessage()
@@ -197,7 +191,6 @@ class CompactFormatter(logging.Formatter):
 
 
 class NetworkErrorFilter(logging.Filter):
-    """Filter untuk mengurangi spam dari network error yang berulang"""
     
     def __init__(self, max_same_errors=5):
         super().__init__()
@@ -205,28 +198,24 @@ class NetworkErrorFilter(logging.Filter):
         self.max_same_errors = max_same_errors
     
     def filter(self, record):
-        """Return False untuk skip log, True untuk lanjutkan"""
         
-        # Network error yang berulang dalam 60 detik, skip beberapa
         if record.levelno >= logging.ERROR:
             exc_info = record.exc_info
             if exc_info:
                 exc_type = exc_info
                 exc_name = exc_type.__name__ if exc_type else "Unknown"
                 
-                # Jika error sama berulang, skip beberapa kali
                 if exc_name in self.error_cache:
                     count, last_time = self.error_cache[exc_name]
                     now = datetime.now(timezone.utc).timestamp()
-                    
-                    # Reset counter setelah 
+                     
 
                     if now - last_time > 60:  # Reset setelah 60 detik
                         self.error_cache[exc_name] = (1, now)
                     else:
                         self.error_cache[exc_name] = (count + 1, now)
                         if count >= self.max_same_errors:
-                            return False  # Skip log ini
+                            return False
                 else:
                     self.error_cache[exc_name] = (1, datetime.now(timezone.utc).timestamp())
         
@@ -243,7 +232,6 @@ _file_handler.setFormatter(_log_formatter)
 _stream_handler = logging.StreamHandler()
 _stream_handler.setFormatter(_log_formatter)
 
-# Tambahkan filter untuk mengurangi spam
 network_filter = NetworkErrorFilter(max_same_errors=3)
 _stream_handler.addFilter(network_filter)
 _file_handler.addFilter(network_filter)
@@ -261,12 +249,12 @@ is_sending:       bool        = False
 daily_count:      int         = 0
 daily_reset_date              = datetime.now(timezone.utc).date()
 last_save_time                = datetime.now(timezone.utc)
-sending_lock                  = None  # Akan diinisialisasi di async context
+sending_lock                  = None
 is_paused:        bool        = False
 local_sent:       OrderedDict = OrderedDict()
 MAX_LOCAL_SENT                = 5000
 flood_ctrl:       dict | None = None
-config_lock                  = None  # Akan diinisialisasi di async context
+config_lock                  = None
 
 # ============================================================
 # === REDIS CONNECTION ===
@@ -297,7 +285,7 @@ async def connect_redis_async() -> None:
             return
         except Exception as e:
             logging.error(f"❌ Redis gagal (percobaan {attempt+1}/5): {e}")
-            await asyncio.sleep(5)  # Non-blocking
+            await asyncio.sleep(5)
 
     logging.error("❌ Redis tidak bisa terhubung, fallback ke lokal")
     redis_client = None
@@ -551,7 +539,6 @@ class SmartFloodController:
 # === LOCAL SENT HELPERS ===
 # ============================================================
 def _local_sent_add(key: str, max_size: int = MAX_LOCAL_SENT) -> None:
-    """Tambah ke local_sent dengan eviction FIFO jika melebihi batas."""
     if key in local_sent:
         return
     local_sent[key] = True
@@ -565,7 +552,6 @@ async def load_all() -> None:
     global pending_media, daily_count, daily_reset_date, flood_ctrl
 
     async with config_lock:
-        # Load pending media
         try:
             raw = await r_get(KEY_PENDING)
             if raw:
@@ -576,7 +562,6 @@ async def load_all() -> None:
             logging.error(f"❌ Gagal load pending: {e}")
             pending_media = []
 
-        # Load daily count
         try:
             count_str  = await r_get(KEY_DAILY_COUNT)
             date_str   = await r_get(KEY_DAILY_DATE)
@@ -592,7 +577,6 @@ async def load_all() -> None:
             daily_count      = 0
             daily_reset_date = datetime.now(timezone.utc).date()
 
-        # Load flood controller
         try:
             flood_data = await r_get_json(KEY_FLOOD_CTRL)
             if flood_data:
@@ -605,7 +589,6 @@ async def load_all() -> None:
             logging.warning(f"⚠️ Gagal load flood control: {e}")
             flood_ctrl = SmartFloodController()
 
-        # Load daily limit
         try:
             limit_str = await r_get(KEY_DAILY_LIMIT)
             if limit_str:
@@ -614,7 +597,6 @@ async def load_all() -> None:
         except (ValueError, TypeError) as e:
             logging.warning(f"⚠️ Gagal load daily limit: {e}")
 
-        # Load send delay
         try:
             delay_str = await r_get(KEY_SEND_DELAY)
             if delay_str:
@@ -728,10 +710,6 @@ async def is_duplicate(fingerprint: dict, pending_snapshot: list | None = None) 
     return False
 
 async def mark_sent(fingerprint: dict) -> None:
-    """
-    Mark video sebagai sudah dikirim.
-    Jika Redis gagal, fallback ke local_sent.
-    """
     if not fingerprint:
         return
 
@@ -879,7 +857,6 @@ async def queue_worker(bot):
     while True:
         await asyncio.sleep(WAIT_TIME)
 
-        # Auto save berkala
         now = datetime.now(timezone.utc)
         if (now - last_save_time).total_seconds() >= AUTO_SAVE_INTERVAL:
             await save_all()
@@ -898,7 +875,6 @@ async def queue_worker(bot):
             logging.warning(f"⛔ Daily limit tercapai ({DAILY_LIMIT})")
             continue
 
-        # Atomic batch grab dalam satu lock, cegah race condition
         async with sending_lock:
             if is_sending:
                 continue
@@ -937,7 +913,6 @@ async def queue_worker(bot):
                 group_num = (i // GROUP_SIZE) + 1
                 total_grp = (total + GROUP_SIZE - 1) // GROUP_SIZE
 
-                # Snapshot pending untuk cek duplikat (hindari iterasi concurrent)
                 async with sending_lock:
                     pending_snapshot = pending_media.copy()
 
@@ -954,7 +929,6 @@ async def queue_worker(bot):
                         bot, TARGET_CHAT_ID, items, ADMIN_CHAT_ID
                     )
                     if success:
-                        # Update daily_count dalam lock
                         async with sending_lock:
                             daily_count += len(items)
                         sent_count += len(items)
@@ -970,7 +944,6 @@ async def queue_worker(bot):
                             pending_media.extend(group)
                         await save_pending()
 
-                # Baca DELAY_BETWEEN_SEND dengan config_lock
                 async with config_lock:
                     current_delay = DELAY_BETWEEN_SEND
                 delay = current_delay + random.uniform(DELAY_RANDOM_MIN, DELAY_RANDOM_MAX)
@@ -1151,13 +1124,11 @@ async def cmd_resetdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
     await notify_admins(context.bot, msg)
 
-# — _flatten_arg: infinite loop diperbaiki
 def _flatten_arg(arg) -> str | None:
-    """Flatten nested list/tuple menjadi string."""
     while isinstance(arg, (list, tuple)):
         if len(arg) == 0:
             return None
-        arg = arg  # Ambil elemen pertama, bukan arg = arg
+        arg = arg
     return str(arg).strip()
 
 async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1166,12 +1137,12 @@ async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         if not context.args:
-            await update.message.reply_text("❌ Format salah. Gunakan: /setlimit 1000")
+            await update.message.reply_text("❌ Format salah. Contoh: /setlimit 1000")
             return
 
         arg_str = _flatten_arg(context.args)
         if arg_str is None:
-            await update.message.reply_text("❌ Format salah. Gunakan: /setlimit 1000")
+            await update.message.reply_text("❌ Format salah. Contoh: /setlimit 1000")
             return
 
         new_limit = int(arg_str)
@@ -1179,7 +1150,6 @@ async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Limit harus antara 1-5000")
             return
 
-        # Gunakan config_lock untuk update DAILY_LIMIT
         async with config_lock:
             global DAILY_LIMIT
             DAILY_LIMIT = new_limit
@@ -1190,7 +1160,7 @@ async def cmd_setlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except (ValueError, TypeError) as e:
         logging.error(f"❌ Error parsing setlimit: {e}")
-        await update.message.reply_text("❌ Format salah. Gunakan: /setlimit 1000")
+        await update.message.reply_text("❌ Format salah. Contoh: /setlimit 1000")
 
 async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_superadmin(update):
@@ -1198,12 +1168,12 @@ async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         if not context.args:
-            await update.message.reply_text("❌ Format salah. Gunakan: /setdelay 2.5")
+            await update.message.reply_text("❌ Format salah. Contoh: /setdelay 2.5")
             return
 
         arg_str = _flatten_arg(context.args)
         if arg_str is None:
-            await update.message.reply_text("❌ Format salah. Gunakan: /setdelay 2.5")
+            await update.message.reply_text("❌ Format salah. Contoh: /setdelay 2.5")
             return
 
         new_delay = float(arg_str)
@@ -1211,7 +1181,6 @@ async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Delay harus antara 0.1-10.0 detik")
             return
 
-        # Gunakan config_lock untuk update DELAY_BETWEEN_SEND
         async with config_lock:
             global DELAY_BETWEEN_SEND
             DELAY_BETWEEN_SEND = new_delay
@@ -1222,7 +1191,7 @@ async def cmd_setdelay(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except (ValueError, TypeError) as e:
         logging.error(f"❌ Error parsing setdelay: {e}")
-        await update.message.reply_text("❌ Format salah. Gunakan: /setdelay 2.5")
+        await update.message.reply_text("❌ Format salah. Contoh: /setdelay 2.5")
 
 async def cmd_shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_superadmin(update):
@@ -1241,17 +1210,13 @@ async def cmd_shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def on_startup(app):
     global sending_lock, config_lock
     
-    # Inisialisasi locks di async context
     sending_lock = asyncio.Lock()
     config_lock = asyncio.Lock()
     
-    # Koneksi Redis
     await connect_redis_async()
     
-    # Load semua data
     await load_all()
     
-    # Mulai queue worker
     asyncio.create_task(queue_worker(app.bot))
     
     logging.info("🚀 Bot siap!")
@@ -1267,15 +1232,12 @@ def handle_shutdown(signum, frame):
     logging.info("⚠️ Shutdown signal diterima, menyimpan data...")
     try:
         loop = asyncio.get_running_loop()
-        # Buat task untuk save_all() secara async
         asyncio.create_task(_async_shutdown())
     except RuntimeError:
-        # Tidak ada running loop, exit langsung
         logging.info("✅ Data tersimpan, bot berhenti")
         sys.exit(0)
 
 async def _async_shutdown():
-    """Helper untuk shutdown async"""
     try:
         await save_all()
         logging.info("✅ Data tersimpan, bot berhenti")
@@ -1292,7 +1254,6 @@ async def _async_shutdown():
 # === ERROR HANDLER ===
 # ============================================================
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle errors dari update processing"""
     error = context.error
     if error is None:
         return
