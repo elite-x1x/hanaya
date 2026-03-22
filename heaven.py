@@ -1371,7 +1371,7 @@ def main():
     app.add_handler(CommandHandler("shutdown", cmd_shutdown))
 
     logging.info("╔══════════════════════════════════╗")
-    logging.info(f"║ 🌸 HEAVEN BOT v5.0 — {BOT_NAME} ║")
+    logging.info(f"║   🌸 HEAVEN BOT v5.0 — {BOT_NAME}   ║")
     logging.info(f"║  Daily Limit : {DAILY_LIMIT} Media/hari   ║")
     logging.info(f"║  Group Size  : {GROUP_SIZE} Media/kelompok  ║")
     logging.info(f"║  Max Pending : {MAX_QUEUE_SIZE} Media        ║")
