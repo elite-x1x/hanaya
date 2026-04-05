@@ -4790,8 +4790,17 @@ async def on_startup(app) -> None:
 
     console_mgr.print_status_line("Loading GLOBAL sent files...")
     logging.info(f"📥 [BOT: {BOT_NAME}] Loading GLOBAL sent files...")
-    await global_sent_manager.load_all()
-
+    #await global_sent_manager.load_all()
+    try:
+        await global_sent_manager.load_all()
+    except Exception as e:
+        logging.error(f"❌ [BOT: {BOT_NAME}] Gagal load global sent: {e}")
+        # Coba recovery
+        try:
+            await global_sent_manager._init_new_file()
+        except Exception as e2:
+            logging.error(f"❌ [BOT: {BOT_NAME}] Gagal init new sent file: {e2}")
+        
     # ✅ PENTING: Load persistent queue DULU
     console_mgr.print_status_line("Loading persistent queue...")
     logging.info(f"📥 [BOT: {BOT_NAME}] Loading persistent queue...")
