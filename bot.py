@@ -103,7 +103,6 @@ def _parse_media_types(env_key: str) -> set:
         "animation", "voice", "video_note", "sticker"
     }
     
-    # Default yang reasonable
     if not raw:
         default = {"video", "photo", "document"}
         return default
@@ -114,17 +113,14 @@ def _parse_media_types(env_key: str) -> set:
         if media_type in ALL_TYPES:
             allowed_types.add(media_type)
     
-    # Jika hasil parsing kosong, gunakan default
     if not allowed_types:
         default = {"video", "photo", "document"}
         return default
     
     return allowed_types
 
-# Gunakan ALLOWED_MEDIA_TYPES global
 ALLOWED_MEDIA_TYPES = _parse_media_types("ALLOWED_MEDIA_TYPES")
 
-# Mapping untuk display
 MEDIA_TYPE_DISPLAY = {
     "video": "🎬 Video (MP4, WebM, MKV, AVI, MOV, FLV, WMV, 3GP)",
     "photo": "🖼️ Photo (JPG, PNG, WebP, HEIC, BMP, TIFF)",
@@ -153,7 +149,6 @@ MAX_RETRIES             = int(os.getenv("MAX_RETRIES", "2"))
 MAX_QUEUE_SIZE          = int(os.getenv("MAX_QUEUE_SIZE", "1000"))
 AUTO_SAVE_INTERVAL      = int(os.getenv("AUTO_SAVE_INTERVAL", "60"))
 
-# Validasi config
 if not (100 <= MAX_QUEUE_SIZE <= 10000):
     raise ValueError("MAX_QUEUE_SIZE harus antara 100-10000")
 
@@ -188,6 +183,7 @@ SENT_FILE_EXT     = ".json"
 MAX_SENT_PER_FILE = 2000
 
 FILE_PENDING   = STATE_DIR / "pending.json"
+FILE_QUEUE     = STATE_DIR / "queue.json"
 FILE_DAILY     = STATE_DIR / "daily.json"
 FILE_FLOOD     = STATE_DIR / "flood.json"
 FILE_CONFIG    = STATE_DIR / "config.json"
@@ -220,13 +216,14 @@ class ConsoleOutputManager:
         banner = f"""
 ╔════════════════════════════════════════════════════════════════
 ║                                                               
-║               🌸 HANAYA BOT v5.7 — PRODUCTION       
+║               🌸 HANAYA BOT v5.9 — ULTRA STABLE       
 ║                                                                
 ║  Bot Name       : {bot_name:<45} 
 ║  Status         : ✅ STARTING                                
 ║  Mode           : Polling (Long-polling)                     
 ║  Anti-Duplikat  : ✅ TRIPLE-CHECK + QUEUE DEDUP          
 ║  Global Sent    : data/global/sent/ (SHARED)                  
+║  Queue Persist  : ✅ AUTO-SAVE EVERY 10s                     
 ║  Lock Type      : OS-level (fcntl) + asyncio                  
 ║  Reload Interval: 10 detik                                    
 ║                                                                
@@ -236,6 +233,7 @@ class ConsoleOutputManager:
 ║  Logs Directory : logs/                                        
 ║  Data Directory : data/{bot_name}/                             
 ║  Global Sent    : data/global/sent/                            
+║  Queue Persist  : data/{bot_name}/state/queue.json             
 ║                                                                
 ╚════════════════════════════════════════════════════════════════
 """
@@ -267,6 +265,7 @@ class ConsoleOutputManager:
    ├─ Max queue size         : {MAX_QUEUE_SIZE} media
    ├─ Max retries            : {MAX_RETRIES}
    ├─ Auto-save interval     : {AUTO_SAVE_INTERVAL}s
+   ├─ Queue persist file     : {FILE_QUEUE.name}
    └─ Max per sent file      : {MAX_SENT_PER_FILE} entry
 
 🔒 Anti-Duplikat:
@@ -274,6 +273,7 @@ class ConsoleOutputManager:
    ├─ Queue deduplication    : ✅ ENABLED
    ├─ Atomic write + fsync   : ✅ ENABLED
    ├─ OS-level file lock     : ✅ ENABLED
+   ├─ Queue persistence      : ✅ ENABLED
    └─ Reload interval        : 10 detik
 
 🎯 Target Chats:
@@ -310,16 +310,19 @@ class ConsoleOutputManager:
 ║                    ✅ BOT READY & LISTENING                   
 ║                                                                
 ║  🚀 Queue Worker        : ACTIVE                              
+║  💾 Queue Persistence   : ACTIVE (10s auto-save)              
 ║  📡 Message Handler     : ACTIVE                              
 ║  🌐 Flask Dashboard     : ACTIVE (:{FLASK_PORT})              
-║  💾 Auto-Save           : ACTIVE ({AUTO_SAVE_INTERVAL}s)    
 ║  🔄 Global Sync         : ACTIVE (10s)                     
-║                                                               
+║                                                                
 ║  📊 Commands:                                                
 ║     /ping         - Health check                              
 ║     /status       - Bot status                                
 ║     /stats        - Realtime stats                            
 ║     /help         - Daftar command                            
+║     /tuning       - Tuning menu                               
+║     /presets      - Show presets                              
+║     /checkqueue   - Check queue format                        
 ║                                                                
 ║  🌐 Web Access:                                                
 ║     Dashboard  : http://localhost:{FLASK_PORT}/dashboard  
@@ -330,6 +333,11 @@ class ConsoleOutputManager:
 ║     Network: logs/{BOT_NAME}_network.log                    
 ║     Debug  : logs/{BOT_NAME}_debug.log                      
 ║     Reload : logs/{BOT_NAME}_reload.log                      
+║                                                                
+║  📦 Data:                                                     
+║     Queue  : {FILE_QUEUE.name}                                
+║     Pending: {FILE_PENDING.name}                              
+║     Daily  : {FILE_DAILY.name}                                
 ║                                                                
 ║  Press Ctrl+C untuk shutdown gracefully...                   
 ║                                                                
@@ -563,7 +571,6 @@ def setup_logging(bot_name: str):
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
     console_handler.addFilter(NetworkErrorFilter(max_same_errors=3))
-    # ✅ Filter untuk console: hanya WARNING, ERROR, CRITICAL
     console_handler.setLevel(logging.WARNING)
     
     # Setup root logger
@@ -702,6 +709,237 @@ def parse_retry_after(err: str) -> int:
     )
     return default_retry
 
+
+# ============================================================
+# === PERSISTENT QUEUE MANAGER ===
+# ============================================================
+class PersistentQueueManager:
+    """✅ Mengelola queue dengan auto-save ke file"""
+    
+    def __init__(self, queue_file: Path, auto_save_interval: int = 10):
+        self.queue_file = queue_file
+        self.auto_save_interval = auto_save_interval
+        self._last_save = time.time()
+        self._save_lock = asyncio.Lock()
+        self._dirty = False
+    
+    async def save_queue(self, queue: asyncio.Queue) -> bool:
+        """✅ Simpan queue ke file dengan atomic write dan normalisasi"""
+        async with self._save_lock:
+            try:
+                snapshot = get_queue_snapshot(queue)
+                
+                if not snapshot:
+                    if self.queue_file.exists():
+                        try:
+                            self.queue_file.unlink()
+                        except Exception:
+                            pass
+                    self._dirty = False
+                    return True
+                
+                # ✅ Normalize semua ke format 3-tuple
+                normalized = []
+                for item in snapshot:
+                    try:
+                        if isinstance(item, (list, tuple)):
+                            if len(item) == 2:
+                                file_id, media_type = item
+                                normalized.append([file_id, media_type, {"file_id": file_id}])
+                            elif len(item) == 3:
+                                normalized.append(list(item))
+                            else:
+                                logging.warning(f"⚠️ Skip item with len={len(item)}")
+                        else:
+                            logging.warning(f"⚠️ Skip non-list item")
+                    except Exception as e:
+                        logging.warning(f"⚠️ Error normalizing item: {e}")
+                
+                if not normalized:
+                    if self.queue_file.exists():
+                        try:
+                            self.queue_file.unlink()
+                        except Exception:
+                            pass
+                    self._dirty = False
+                    return True
+                
+                # ✅ Atomic write: tulis ke temp dulu
+                temp_file = self.queue_file.with_suffix(".json.tmp")
+                
+                with open(temp_file, "w", encoding="utf-8") as f:
+                    json.dump(normalized, f)
+                    f.flush()
+                    os.fsync(f.fileno())
+                
+                # ✅ Atomic rename
+                if self.queue_file.exists():
+                    backup = self.queue_file.with_suffix(".json.backup")
+                    try:
+                        if backup.exists():
+                            backup.unlink()
+                        self.queue_file.replace(backup)
+                    except Exception:
+                        pass
+                
+                try:
+                    temp_file.replace(self.queue_file)
+                except Exception as e:
+                    logging.error(f"❌ Gagal rename temp file: {e}")
+                    if temp_file.exists():
+                        temp_file.unlink()
+                    return False
+                
+                self._dirty = False
+                self._last_save = time.time()
+                
+                logging.debug(
+                    f"💾 [QUEUE] Saved {len(normalized)} items to {self.queue_file.name}"
+                )
+                return True
+            
+            except Exception as e:
+                logging.error(f"❌ [QUEUE] Gagal save: {e}")
+                return False
+    
+    async def load_queue(self, queue: asyncio.Queue) -> int:
+        """✅ Load queue dari file dengan recovery dan normalisasi"""
+        try:
+            if not self.queue_file.exists():
+                logging.info(f"📂 [QUEUE] File tidak ada, queue kosong")
+                return 0
+            
+            with open(self.queue_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            
+            if not isinstance(data, list):
+                logging.warning(f"⚠️ [QUEUE] File format invalid, bukan list")
+                return 0
+            
+            loaded = 0
+            for i, item in enumerate(data):
+                try:
+                    # ✅ Validate format
+                    if not isinstance(item, (list, tuple)):
+                        logging.debug(f"⚠️ [QUEUE] Item {i} bukan list/tuple, skip")
+                        continue
+                    
+                    if len(item) == 2:
+                        file_id, media_type = item
+                        if not isinstance(file_id, str) or not isinstance(media_type, str):
+                            logging.debug(f"⚠️ [QUEUE] Item {i} type invalid, skip")
+                            continue
+                        if not file_id or not media_type:
+                            logging.debug(f"⚠️ [QUEUE] Item {i} empty string, skip")
+                            continue
+                        item_to_queue = (file_id, media_type, {"file_id": file_id})
+                    
+                    elif len(item) == 3:
+                        file_id, media_type, fp = item
+                        if not isinstance(file_id, str) or not isinstance(media_type, str) or not isinstance(fp, dict):
+                            logging.debug(f"⚠️ [QUEUE] Item {i} type invalid, skip")
+                            continue
+                        if not file_id or not media_type:
+                            logging.debug(f"⚠️ [QUEUE] Item {i} empty string, skip")
+                            continue
+                        item_to_queue = (file_id, media_type, fp)
+                    
+                    else:
+                        logging.debug(f"⚠️ [QUEUE] Item {i} invalid length {len(item)}, skip")
+                        continue
+                    
+                    if not queue.full():
+                        await queue.put(item_to_queue)
+                        loaded += 1
+                    else:
+                        logging.warning(
+                            f"⚠️ [QUEUE] Queue penuh, {len(data) - i} item tidak dimuat"
+                        )
+                        break
+                
+                except (ValueError, TypeError, IndexError) as e:
+                    logging.debug(f"⚠️ [QUEUE] Item {i} error: {e}, skip")
+                    continue
+                except Exception as e:
+                    logging.warning(f"⚠️ [QUEUE] Item {i} unexpected error: {e}")
+                    continue
+            
+            logging.info(f"📥 [QUEUE] Loaded {loaded}/{len(data)} items")
+            
+            # ✅ Cleanup backup jika berhasil
+            backup = self.queue_file.with_suffix(".json.backup")
+            if backup.exists():
+                try:
+                    backup.unlink()
+                except Exception:
+                    pass
+            
+            return loaded
+        
+        except json.JSONDecodeError as e:
+            logging.error(f"❌ [QUEUE] JSON corrupt: {e}")
+            
+            # ✅ Try recover dari backup
+            backup = self.queue_file.with_suffix(".json.backup")
+            if backup.exists():
+                try:
+                    logging.info(f"🔄 [QUEUE] Recovering dari backup...")
+                    with open(backup, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    
+                    if not isinstance(data, list):
+                        logging.error(f"❌ [QUEUE] Backup juga invalid")
+                        return 0
+                    
+                    loaded = 0
+                    for i, item in enumerate(data):
+                        try:
+                            if isinstance(item, (list, tuple)):
+                                if len(item) == 2:
+                                    file_id, media_type = item
+                                    item_to_queue = (file_id, media_type, {"file_id": file_id})
+                                elif len(item) == 3:
+                                    file_id, media_type, fp = item
+                                    item_to_queue = (file_id, media_type, fp)
+                                else:
+                                    continue
+                                
+                                if not queue.full():
+                                    await queue.put(item_to_queue)
+                                    loaded += 1
+                        except Exception:
+                            continue
+                    
+                    # ✅ Restore dari backup
+                    try:
+                        self.queue_file.write_bytes(backup.read_bytes())
+                    except Exception:
+                        pass
+                    
+                    logging.info(f"✅ [QUEUE] Recovered {loaded} items from backup")
+                    return loaded
+                
+                except Exception as e2:
+                    logging.error(f"❌ [QUEUE] Backup recovery failed: {e2}")
+            
+            return 0
+        
+        except Exception as e:
+            logging.error(f"❌ [QUEUE] Gagal load: {e}")
+            return 0
+    
+    async def should_save(self) -> bool:
+        """Cek apakah perlu save"""
+        now = time.time()
+        return (now - self._last_save) >= self.auto_save_interval
+    
+    def mark_dirty(self):
+        """Mark queue sebagai dirty (ada perubahan)"""
+        self._dirty = True
+
+# ✅ Buat instance
+queue_file = STATE_DIR / "queue.json"
+queue_manager = PersistentQueueManager(queue_file, auto_save_interval=10)
 
 # ============================================================
 # === GLOBAL SENT FILE MANAGER ===
@@ -984,9 +1222,7 @@ class GlobalSentFileManager:
 
     async def add(self, key: str) -> None:
         """✅ Tambahkan key ke file sent (dengan double-check dan atomic write)"""
-        # ✅ Langsung masuk lock, jangan check dulu di luar
         async with self._async_lock:
-            # Check di dalam lock
             if key in self._cache:
                 return
             
@@ -1113,14 +1349,33 @@ class LocalStateManager:
         self.state_dir = state_dir
 
     async def save_pending(self, pending: list) -> None:
+        """✅ Simpan pending dengan normalisasi format ke 3-tuple"""
         try:
+            # ✅ Normalize semua ke format 3-tuple
+            normalized = []
+            for item in pending:
+                try:
+                    if isinstance(item, (list, tuple)):
+                        if len(item) == 2:
+                            file_id, media_type = item
+                            normalized.append([file_id, media_type, {"file_id": file_id}])
+                        elif len(item) == 3:
+                            normalized.append(list(item))
+                        else:
+                            logging.debug(f"⚠️ Skip item with len={len(item)}")
+                except Exception as e:
+                    logging.debug(f"⚠️ Error normalizing item: {e}")
+            
             with open(FILE_PENDING, "w", encoding="utf-8") as fp:
-                json.dump(pending, fp)
+                json.dump(normalized, fp)
+            
+            logging.debug(f"💾 [LOCAL] Saved {len(normalized)} pending items")
+        
         except Exception as e:
             logging.error(f"❌ [LOCAL] Gagal save pending: {e}")
 
     async def load_pending(self) -> list:
-        """✅ Load pending dengan validasi format"""
+        """✅ Load pending dengan validasi format yang benar"""
         try:
             if not FILE_PENDING.exists():
                 return []
@@ -1132,29 +1387,59 @@ class LocalStateManager:
                     logging.warning(f"⚠️ Pending file bukan list, skip")
                     return []
                 
-                # ✅ Validate setiap item
+                # ✅ Validate setiap item dengan format yang benar
                 valid_items = []
                 for i, item in enumerate(data):
-                    if isinstance(item, (list, tuple)) and len(item) >= 2:
-                        try:
-                            file_id, media_type = item, item
-                            if isinstance(file_id, str) and isinstance(media_type, str):
-                                valid_items.append(item)
+                    try:
+                        # ✅ Support 2-tuple (old) dan 3-tuple (new)
+                        if isinstance(item, (list, tuple)):
+                            if len(item) == 2:
+                                # Old format: (file_id, media_type)
+                                file_id, media_type = item
+                                if isinstance(file_id, str) and isinstance(media_type, str):
+                                    if file_id and media_type:
+                                        valid_items.append(item)
+                                    else:
+                                        logging.debug(f"⚠️ Item {i} empty string, skip")
+                                else:
+                                    logging.debug(
+                                        f"⚠️ Item {i} type mismatch (expected str,str), skip"
+                                    )
+                            
+                            elif len(item) == 3:
+                                # New format: (file_id, media_type, fp_dict)
+                                file_id, media_type, fp = item
+                                if (isinstance(file_id, str) and 
+                                    isinstance(media_type, str) and
+                                    isinstance(fp, dict)):
+                                    if file_id and media_type:
+                                        valid_items.append(item)
+                                    else:
+                                        logging.debug(f"⚠️ Item {i} empty string, skip")
+                                else:
+                                    logging.debug(
+                                        f"⚠️ Item {i} type mismatch (expected str,str,dict), skip"
+                                    )
+                            
                             else:
-                                logging.warning(
-                                    f"⚠️ Item {i} format invalid, skip"
+                                logging.debug(
+                                    f"⚠️ Item {i} invalid length (got {len(item)}, expected 2 or 3), skip"
                                 )
-                        except (ValueError, TypeError):
-                            logging.warning(f"⚠️ Item {i} error, skip")
-                    else:
-                        logging.warning(f"⚠️ Item {i} format invalid, skip")
+                        else:
+                            logging.debug(f"⚠️ Item {i} bukan list/tuple, skip")
+                    
+                    except (ValueError, TypeError, IndexError) as e:
+                        logging.debug(f"⚠️ Item {i} error: {e}, skip")
                 
                 if len(valid_items) < len(data):
+                    invalid_count = len(data) - len(valid_items)
                     logging.warning(
-                        f"⚠️ {len(data) - len(valid_items)}/{len(data)} "
-                        f"item pending invalid"
+                        f"⚠️ {invalid_count}/{len(data)} item pending invalid/corrupt"
                     )
                 
+                logging.info(
+                    f"📥 [LOCAL] Loaded {len(valid_items)} valid pending items"
+                )
                 return valid_items
         
         except json.JSONDecodeError as e:
@@ -1547,12 +1832,10 @@ class SmartFloodController:
 
     async def record_success(self) -> None:
         """✅ Catat pengiriman sukses dengan penalty decay"""
-        # ✅ Decay penalty lebih cepat
         if self.penalty > 0:
             decay_rate = 10.0
             self.penalty = max(0.0, self.penalty - decay_rate)
         
-        # ✅ Decay flood count
         if self.flood_count > 0:
             self.flood_count = max(0, self.flood_count - 1)
             if self.flood_count == 0:
@@ -1560,7 +1843,6 @@ class SmartFloodController:
                 self.penalty = 0.0
                 logging.info(f"✅ [LOCAL] Flood status normal kembali")
         
-        # ✅ Decay group delay
         if self.group_delay_min > DELAY_BETWEEN_GROUP_MIN:
             self.group_delay_min = max(
                 float(DELAY_BETWEEN_GROUP_MIN),
@@ -1703,7 +1985,7 @@ async def save_all() -> None:
 
 
 async def load_local_state() -> None:
-    """Load LOCAL state SAJA (pending, daily, flood, config, ratelimit)"""
+    """Load LOCAL state SAJA dengan proper locking"""
     global daily_count, daily_reset_date, DAILY_LIMIT, \
            DELAY_BETWEEN_SEND, flood_ctrl, user_ratelimit
 
@@ -1777,17 +2059,20 @@ async def load_local_state() -> None:
     except Exception as e:
         logging.warning(f"⚠️ [LOCAL] Gagal load flood ctrl: {e}")
 
-    # Load LOCAL config
+    # Load LOCAL config dengan proper lock
     try:
         config = await state_manager.load_config()
-        if "daily_limit" in config:
-            DAILY_LIMIT = int(config["daily_limit"])
-            logging.info(f"📥 [LOCAL] Daily limit dimuat: {DAILY_LIMIT}")
-        if "send_delay" in config:
-            DELAY_BETWEEN_SEND = float(config["send_delay"])
-            logging.info(
-                f"📥 [LOCAL] Send delay dimuat: {DELAY_BETWEEN_SEND}s"
-            )
+        if config:
+            # ✅ FIX: Use lock untuk update global variables
+            async with config_lock:
+                if "daily_limit" in config:
+                    DAILY_LIMIT = int(config["daily_limit"])
+                    logging.info(f"📥 [LOCAL] Daily limit dimuat: {DAILY_LIMIT}")
+                if "send_delay" in config:
+                    DELAY_BETWEEN_SEND = float(config["send_delay"])
+                    logging.info(
+                        f"📥 [LOCAL] Send delay dimuat: {DELAY_BETWEEN_SEND}s"
+                    )
     except Exception as e:
         logging.warning(f"⚠️ [LOCAL] Gagal load config: {e}")
 
@@ -2309,7 +2594,7 @@ async def queue_worker(bot) -> None:
     logging.info(f"🚀 [BOT: {BOT_NAME}] Queue worker dimulai")
     sent_since_pause = 0
     iteration_count  = 0
-    last_pending_save = datetime.now(timezone.utc)
+    last_queue_save = datetime.now(timezone.utc)
 
     try:
         while True:
@@ -2346,23 +2631,14 @@ async def queue_worker(bot) -> None:
                             break
 
                 except asyncio.TimeoutError:
-                    # ✅ Cek apakah queue masih penuh
-                    if pending_queue.qsize() > MAX_QUEUE_SIZE * 0.9:
-                        logging.warning(
-                            f"⚠️ [BOT: {BOT_NAME}] Queue hampir penuh ({pending_queue.qsize()}), "
-                            f"tapi timeout mengambil batch"
-                        )
-                    
-                    # ✅ Save pending secara periodik
+                    # ✅ Auto-save queue secara periodik
                     now = datetime.now(timezone.utc)
-                    if (now - last_pending_save).total_seconds() >= 30:
+                    if (now - last_queue_save).total_seconds() >= 10:
                         try:
-                            await state_manager.save_pending(
-                                get_queue_snapshot(pending_queue)
-                            )
-                            last_pending_save = now
+                            await queue_manager.save_queue(pending_queue)
+                            last_queue_save = now
                         except Exception as e:
-                            logging.error(f"❌ Gagal save pending: {e}")
+                            logging.error(f"❌ Gagal auto-save queue: {e}")
                     
                     await asyncio.sleep(1)
                     continue
@@ -2379,11 +2655,12 @@ async def queue_worker(bot) -> None:
 
                 for item in batch:
                     try:
-                        # ✅ Handle berbagai format
+                        # ✅ Handle berbagai format dengan normalisasi
                         if not isinstance(item, (list, tuple)):
                             logging.warning(f"⚠️ Item queue bukan list/tuple, skip")
                             continue
                         
+                        # ✅ Normalize ke format 3-tuple (file_id, media_type, fp)
                         if len(item) == 2:
                             # Old format: (file_id, media_type)
                             file_id, media_type = item
@@ -2404,6 +2681,10 @@ async def queue_worker(bot) -> None:
                         
                         if not isinstance(media_type, str) or not media_type:
                             logging.warning(f"⚠️ Media type invalid, skip")
+                            continue
+                        
+                        if not isinstance(fp, dict):
+                            logging.warning(f"⚠️ FP bukan dict, skip")
                             continue
                         
                         if media_type not in ALLOWED_MEDIA_TYPES:
@@ -2499,13 +2780,12 @@ async def queue_worker(bot) -> None:
                             f"Queue unique: {queue_deduplicator.get_queue_size() if queue_deduplicator else '?'}"
                         )
                         
+                        # ✅ Save queue after success
                         try:
-                            await state_manager.save_pending(
-                                get_queue_snapshot(pending_queue)
-                            )
-                            last_pending_save = datetime.now(timezone.utc)
+                            await queue_manager.save_queue(pending_queue)
+                            last_queue_save = datetime.now(timezone.utc)
                         except Exception as e:
-                            logging.error(f"❌ Gagal save pending: {e}")
+                            logging.error(f"❌ Gagal save queue: {e}")
                     
                     except Exception as e:
                         logging.error(f"❌ Error processing success: {e}")
@@ -2516,7 +2796,7 @@ async def queue_worker(bot) -> None:
                             try:
                                 if not pending_queue.full():
                                     # ✅ Kembalikan fp original
-                                    pending_queue.put_nowait(
+                                    await pending_queue.put(
                                         (file_id, media_type, fp_original)
                                     )
                             except asyncio.QueueFull:
@@ -2536,13 +2816,12 @@ async def queue_worker(bot) -> None:
                             f"dikembalikan ke queue"
                         )
                         
+                        # ✅ Save queue after failure
                         try:
-                            await state_manager.save_pending(
-                                get_queue_snapshot(pending_queue)
-                            )
-                            last_pending_save = datetime.now(timezone.utc)
+                            await queue_manager.save_queue(pending_queue)
+                            last_queue_save = datetime.now(timezone.utc)
                         except Exception as e:
-                            logging.error(f"❌ Gagal save pending: {e}")
+                            logging.error(f"❌ Gagal save queue: {e}")
                     
                     except Exception as e:
                         logging.error(f"❌ Error processing failure: {e}")
@@ -2612,27 +2891,28 @@ async def queue_worker(bot) -> None:
                 )
                 is_sending = False
                 
+                # ✅ FINAL SAVE QUEUE
+                try:
+                    await queue_manager.save_queue(pending_queue)
+                    logging.info(
+                        f"💾 [BOT: {BOT_NAME}] Queue saved: {pending_queue.qsize()} items"
+                    )
+                except Exception as e:
+                    logging.error(
+                        f"❌ [BOT: {BOT_NAME}] Gagal save queue saat cancel: {e}"
+                    )
+                
+                # ✅ FINAL SAVE ALL
                 try:
                     pending_snapshot = get_queue_snapshot(pending_queue)
                     await state_manager.save_pending(pending_snapshot)
                     logging.info(
-                        f"💾 [BOT: {BOT_NAME}] Pending disimpan: {len(pending_snapshot)} item"
+                        f"💾 [BOT: {BOT_NAME}] Pending saved: {len(pending_snapshot)} item"
                     )
                 except Exception as e:
                     logging.error(
                         f"❌ [BOT: {BOT_NAME}] Gagal save pending saat cancel: {e}"
                     )
-                
-                for i in range(3):
-                    try:
-                        await save_all()
-                        break
-                    except Exception as e:
-                        logging.error(
-                            f"❌ [BOT: {BOT_NAME}] Gagal save_all saat cancel "
-                            f"(retry {i+1}/3): {e}"
-                        )
-                        await asyncio.sleep(5)
                 
                 raise
 
@@ -2780,7 +3060,7 @@ async def cmd_help(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Help command"""
+    """Help command - Plain text"""
     if not is_moderator(update):
         await update.message.reply_text("❌ Akses ditolak")
         return
@@ -2788,32 +3068,57 @@ async def cmd_help(
     try:
         role = get_role(update)
         
-        media_info = "📋 *MEDIA YANG SUPPORT:*\n"
+        media_info = "📋 MEDIA YANG SUPPORT:\n"
         for media_type in sorted(ALLOWED_MEDIA_TYPES):
-            media_info += f"  • {MEDIA_TYPE_DISPLAY.get(media_type, media_type)}\n"
+            display = MEDIA_TYPE_DISPLAY.get(media_type, media_type)
+            media_info += f"  • {display}\n"
         
         text = (
             media_info + "\n"
-            "*Moderator Commands:*\n"
-            "├ /ping — Health check\n"
-            "├ /status — Status bot\n"
-            "├ /stats — Statistik realtime\n"
-            "├ /pause — Jeda worker\n"
-            "└ /resume — Lanjutkan worker\n"
+            "Moderator Commands:\n"
+            "/ping - Health check\n"
+            "/status - Status bot\n"
+            "/stats - Statistik realtime\n"
+            "/help - Daftar command\n"
+            "/checkqueue - Check queue format\n"
+            "/currentconfig - Show current config\n"
+            "/pause - Jeda worker\n"
+            "/resume - Lanjutkan worker\n"
         )
+        
         if role == "superadmin":
             text += (
-                "\n*Superadmin Commands:*\n"
-                "├ /flushpending — Kosongkan queue\n"
-                "├ /setlimit <n> — Set daily limit (1-5000)\n"
-                "├ /setdelay <n> — Set delay antar kirim (0.1-10.0)\n"
-                "├ /resetdaily — Reset counter harian\n"
-                "├ /log — Lihat 15 baris log terakhir\n"
-                "├ /globalstats — Lihat statistik global\n"
-                "├ /sentfiles — Lihat file sent\n"
-                "└ /shutdown — Matikan bot\n"
+                "\nSuperadmin Commands - Info:\n"
+                "/tuning - Tuning menu lengkap\n"
+                "/presets - Show preset configs\n"
+                "/currentconfig - Detailed config\n"
+                "/globalstats - Global statistics\n"
+                "/sentfiles - Lihat file sent\n"
+                "/log - Lihat log terakhir\n\n"
+                "Superadmin Commands - Tuning:\n"
+                "/setdelay <n> - Set delay (0.1-10s)\n"
+                "/setrandom <min> <max> - Set random delay\n"
+                "/setgroupdelay <min> <max> - Set group delay\n"
+                "/setgroupsize <n> - Set group size (1-20)\n"
+                "/setbatchpause <every> <min> <max> - Set batch pause\n"
+                "/setlimit <n> - Set daily limit (1-5000)\n"
+                "/setqueuesize <n> - Set queue size (needs restart)\n"
+                "/setfloodpenalty <n> - Set flood penalty step\n"
+                "/setfloodmax <n> - Set max flood penalty\n\n"
+                "Superadmin Commands - Presets:\n"
+                "/applypreset <name> - Apply preset\n"
+                "  • fast - Aggressive, high volume\n"
+                "  • balanced - Default, stable\n"
+                "  • safe - Conservative, safe\n"
+                "  • stealth - Maximum safety\n\n"
+                "Superadmin Commands - Management:\n"
+                "/flushpending - Kosongkan queue\n"
+                "/resetdaily - Reset daily counter\n"
+                "/resetflood - Reset flood counter\n"
+                "/shutdown - Matikan bot\n"
             )
-        await update.message.reply_text(text, parse_mode="Markdown")
+        
+        await update.message.reply_text(text)
     except Exception as e:
         logging.error(f"❌ Error di cmd_help: {e}")
         await update.message.reply_text("❌ Error menampilkan help")
@@ -2822,7 +3127,7 @@ async def cmd_status(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Status command"""
+    """Status command - Plain text"""
     if not is_moderator(update):
         await update.message.reply_text("❌ Akses ditolak")
         return
@@ -2868,8 +3173,8 @@ async def cmd_status(
         minutes, seconds = divmod(remainder, 60)
 
         text = (
-            "📊 *Status Bot HANAYA v5.7 — " + BOT_NAME + "*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 Status Bot HANAYA v5.9 — {BOT_NAME}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🤖 Worker        : {worker_status}\n"
             f"📦 Pending      : {queue_size} media\n"
             f"📤 Terkirim      : {daily_count}/{DAILY_LIMIT} ({daily_pct:.1f}%)\n"
@@ -2878,11 +3183,11 @@ async def cmd_status(
             f"⏱️ Last Save    : {last_save_str}\n"
             f"⚡ Flood Ctrl    : {flood_status}\n"
             f"⏱️ Uptime         : {hours}h {minutes}m {seconds}s\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "💡 Gunakan /help untuk daftar command"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💡 Gunakan /help untuk daftar command"
         )
 
-        await update.message.reply_text(text, parse_mode="Markdown")
+        await update.message.reply_text(text)
     except Exception as e:
         logging.error(f"❌ Error di cmd_status: {e}")
         await update.message.reply_text("❌ Error menampilkan status")
@@ -2891,7 +3196,7 @@ async def cmd_stats(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Stats command"""
+    """Stats command - Plain text"""
     if not is_moderator(update):
         await update.message.reply_text("❌ Akses ditolak")
         return
@@ -2909,20 +3214,23 @@ async def cmd_stats(
         bar_filled = int(pct_used / 10)
         bar = "█" * bar_filled + "░" * (10 - bar_filled)
 
+        flood_status = flood_ctrl.get_status() if flood_ctrl else "N/A"
+        
         text = (
-            f"📈 *STATISTIK REALTIME — {BOT_NAME}*\n\n"
-            f"*Pengiriman Hari Ini (LOCAL)*\n"
+            f"📈 STATISTIK REALTIME — {BOT_NAME}\n\n"
+            f"Pengiriman Hari Ini (LOCAL)\n"
             f"[{bar}] {pct_used:.1f}%\n"
             f"├ Terkirim  : {daily_count}\n"
             f"├ Sisa      : {remaining}\n"
             f"└ Limit     : {DAILY_LIMIT}\n\n"
-            f"*Queue*\n"
+            f"Queue\n"
             f"├ Pending   : {queue_size}\n"
             f"└ Total Sent: {total_sent_global} (GLOBAL)\n\n"
-            f"*Flood Control*\n"
-            f"└ {flood_ctrl.get_status() if flood_ctrl else 'N/A'}"
+            f"Flood Control\n"
+            f"└ {flood_status}"
         )
-        await update.message.reply_text(text, parse_mode="Markdown")
+        
+        await update.message.reply_text(text)
     except Exception as e:
         logging.error(f"❌ Error di cmd_stats: {e}")
         await update.message.reply_text("❌ Error menampilkan stats")
@@ -2931,7 +3239,7 @@ async def cmd_globalstats(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Global stats command"""
+    """Global stats command - Plain text"""
     if not is_moderator(update):
         await update.message.reply_text("❌ Akses ditolak")
         return
@@ -2940,7 +3248,7 @@ async def cmd_globalstats(
         global_info = global_sent_manager.get_info()
 
         text = (
-            f"🌍 *STATISTIK GLOBAL SENT — SHARED*\n"
+            f"🌍 STATISTIK GLOBAL SENT — SHARED\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"📊 Total Entry      : {global_info['total_entries']}\n"
             f"📄 Jumlah File      : {global_info['total_files']}\n"
@@ -2949,18 +3257,19 @@ async def cmd_globalstats(
             f"🔒 Lock Type        : OS-level (fcntl) + asyncio\n"
             f"🔄 Last Reload      : {global_info['last_reload']}\n"
             f"⏱️ Reload Age       : {global_info['reload_age']}\n"
-            f"⏲️ Reload Interval  : {global_info['reload_interval']}\n"
+            f"Ⲥ Reload Interval  : {global_info['reload_interval']}\n"
             f"📂 Known Files      : {global_info['known_files']}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"✅ *Anti-Duplikat:*\n"
+            f"✅ Anti-Duplikat:\n"
             f"   • Triple-check sebelum kirim\n"
             f"   • Queue deduplication\n"
             f"   • Atomic write dengan fsync\n"
+            f"   • Queue persistence (auto-save 10s)\n"
         )
 
         files = global_sent_manager._get_all_sent_files()
         if files:
-            text += f"\n📝 *File Details (Last 5):*\n"
+            text += f"\n📝 File Details (Last 5):\n"
             for f in files[-5:]:
                 try:
                     with open(f, "r", encoding="utf-8") as fp:
@@ -2977,10 +3286,867 @@ async def cmd_globalstats(
                     logging.warning(f"⚠️ Error reading file {f.name}: {e}")
                     text += f"❌ {f.name}\n"
 
-        await update.message.reply_text(text, parse_mode="Markdown")
+        await update.message.reply_text(text)
     except Exception as e:
         logging.error(f"❌ Error di cmd_globalstats: {e}")
         await update.message.reply_text("❌ Error menampilkan global stats")
+
+async def cmd_checkqueue(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Debug: Check queue format"""
+    if not is_superadmin(update):
+        await update.message.reply_text("❌ Hanya superadmin")
+        return
+
+    try:
+        snapshot = get_queue_snapshot(pending_queue)
+        
+        if not snapshot:
+            await update.message.reply_text("📦 Queue kosong")
+            return
+        
+        format_2tuple = 0
+        format_3tuple = 0
+        invalid = 0
+        
+        for item in snapshot[:10]:
+            if isinstance(item, (list, tuple)):
+                if len(item) == 2:
+                    format_2tuple += 1
+                elif len(item) == 3:
+                    format_3tuple += 1
+                else:
+                    invalid += 1
+            else:
+                invalid += 1
+        
+        text = (
+            f"📊 Queue Format Analysis\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Total items: {len(snapshot)}\n"
+            f"2-tuple (old): {format_2tuple}\n"
+            f"3-tuple (new): {format_3tuple}\n"
+            f"Invalid: {invalid}\n\n"
+            f"Sample (first 3):\n"
+        )
+        
+        for i, item in enumerate(snapshot[:3]):
+            if isinstance(item, (list, tuple)):
+                if len(item) >= 2:
+                    file_id = str(item)[:8] if item else "?"
+                    media_type = str(item) if len(item) > 1 else "?"
+                    text += f"{i}: ({file_id}..., {media_type})\n"
+            else:
+                text += f"{i}: INVALID\n"
+        
+        await update.message.reply_text(text)
+    
+    except Exception as e:
+        logging.error(f"❌ Error di cmd_checkqueue: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
+
+async def cmd_sentfiles(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Sent files command - Plain text"""
+    if not is_moderator(update):
+        await update.message.reply_text("❌ Akses ditolak")
+        return
+
+    try:
+        files = global_sent_manager._get_all_sent_files()
+        total_cache = len(global_sent_manager._cache)
+
+        if not files:
+            await update.message.reply_text(
+                "📂 Tidak ada file sent tersimpan"
+            )
+            return
+
+        text = (
+            f"📂 FILE SENT GLOBAL — SHARED\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 Total cache : {total_cache} entry\n"
+            f"📄 Jumlah file : {len(files)} file\n"
+            f"🔒 Lock Type   : OS-level (fcntl) + asyncio\n"
+            f"🔄 Auto-reload : Setiap 10 detik\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"File Details:\n"
+        )
+
+        for f in files:
+            try:
+                with open(f, "r", encoding="utf-8") as fp:
+                    data = json.load(fp)
+                    count = len(data) if isinstance(data, list) else 0
+                size_kb = f.stat().st_size / 1024
+                is_active = (
+                    "✅ Aktif" if f == global_sent_manager._current_file
+                    else "📦 Arsip"
+                )
+                text += (
+                    f"{is_active} | {f.name} | "
+                    f"{count}/{MAX_SENT_PER_FILE} | "
+                    f"{size_kb:.1f}KB\n"
+                )
+            except Exception as e:
+                logging.warning(f"⚠️ Error reading file {f.name}: {e}")
+                text += f"❌ {f.name}\n"
+
+        await update.message.reply_text(text)
+    except Exception as e:
+        logging.error(f"❌ Error di cmd_sentfiles: {e}")
+        await update.message.reply_text("❌ Error menampilkan sent files")
+
+async def cmd_tuning(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Menu tuning lengkap"""
+    if not is_superadmin(update):
+        await update.message.reply_text("❌ Hanya superadmin")
+        return
+
+    try:
+        text = (
+            "⚙️ HANAYA BOT v5.9 — TUNING MENU\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "CURRENT SETTINGS:\n\n"
+            "Rate Limiting:\n"
+            f"├ Delay antar kirim    : {DELAY_BETWEEN_SEND}s\n"
+            f"├ Random min           : {DELAY_RANDOM_MIN}s\n"
+            f"├ Random max           : {DELAY_RANDOM_MAX}s\n"
+            f"├ Group size           : {GROUP_SIZE} media\n"
+            f"├ Delay antar group    : {DELAY_BETWEEN_GROUP_MIN}-{DELAY_BETWEEN_GROUP_MAX}s\n"
+            f"├ Batch pause every    : {BATCH_PAUSE_EVERY} media\n"
+            f"└ Batch pause duration : {BATCH_PAUSE_MIN}-{BATCH_PAUSE_MAX}s\n\n"
+            "Daily Limit:\n"
+            f"├ Daily limit          : {daily_count}/{DAILY_LIMIT} ({(daily_count/DAILY_LIMIT*100):.1f}%)\n"
+            f"└ Reset date           : {daily_reset_date}\n\n"
+            "Queue & Retry:\n"
+            f"├ Max queue size       : {MAX_QUEUE_SIZE} media\n"
+            f"├ Current queue        : {pending_queue.qsize()} media\n"
+            f"├ Max retries          : {MAX_RETRIES}\n"
+            f"└ Auto-save interval   : {AUTO_SAVE_INTERVAL}s\n\n"
+            "Flood Control:\n"
+            f"├ Flood count          : {flood_ctrl.flood_count if flood_ctrl else 0}\n"
+            f"├ Total floods         : {flood_ctrl.total_flood if flood_ctrl else 0}\n"
+            f"├ Current penalty      : {flood_ctrl.penalty if flood_ctrl else 0:.0f}s\n"
+            f"└ Cooling              : {'Yes' if (flood_ctrl.is_cooling if flood_ctrl else False) else 'No'}\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "TUNING COMMANDS:\n\n"
+            "Delay Settings:\n"
+            "/setdelay <value> - Set delay antar kirim (0.1-10s)\n"
+            "/setrandom <min> <max> - Set random delay (0.1-5s)\n"
+            "/setgroupdelay <min> <max> - Set group delay (5-180s)\n\n"
+            "Group & Batch:\n"
+            "/setgroupsize <value> - Set group size (1-20 media)\n"
+            "/setbatchpause <every> <min> <max> - Set batch pause\n\n"
+            "Daily & Queue:\n"
+            "/setlimit <value> - Set daily limit (1-5000)\n"
+            "/setqueuesize <value> - Set max queue (100-10000)\n"
+            "/resetdaily - Reset daily counter\n\n"
+            "Flood Control:\n"
+            "/setfloodpenalty <value> - Set flood penalty step (5-50)\n"
+            "/setfloodmax <value> - Set max penalty (60-600s)\n"
+            "/resetflood - Reset flood counter\n\n"
+            "Info & Debug:\n"
+            "/tuning - Show this menu\n"
+            "/presets - Show preset configs\n"
+            "/applypreset <name> - Apply preset\n"
+            "/currentconfig - Show detailed config\n"
+        )
+        
+        await update.message.reply_text(text)
+    except Exception as e:
+        logging.error(f"❌ Error di cmd_tuning: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
+
+async def cmd_currentconfig(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Show current detailed config - Plain text"""
+    if not is_moderator(update):
+        await update.message.reply_text("❌ Akses ditolak")
+        return
+
+    try:
+        now = datetime.now(timezone.utc)
+        uptime = now - start_time
+        hours, remainder = divmod(int(uptime.total_seconds()), 3600)
+        minutes, seconds = divmod(remainder, 60)
+
+        global_info = global_sent_manager.get_info()
+        
+        text = (
+            f"📋 CURRENT CONFIGURATION\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Bot Info:\n"
+            f"├ Bot name             : {BOT_NAME}\n"
+            f"├ Version              : 5.9 - ULTRA STABLE\n"
+            f"├ Uptime               : {hours}h {minutes}m {seconds}s\n"
+            f"└ Status               : {'⏸️ Paused' if is_paused else ('🔄 Sending' if is_sending else '✅ Idle')}\n\n"
+            f"Rate Limiting:\n"
+            f"├ Delay between send   : {DELAY_BETWEEN_SEND}s + {DELAY_RANDOM_MIN}-{DELAY_RANDOM_MAX}s random\n"
+            f"├ Group size           : {GROUP_SIZE} media per group\n"
+            f"├ Group delay          : {DELAY_BETWEEN_GROUP_MIN}-{DELAY_BETWEEN_GROUP_MAX}s\n"
+            f"├ Batch pause every    : {BATCH_PAUSE_EVERY} media\n"
+            f"└ Batch pause duration : {BATCH_PAUSE_MIN}-{BATCH_PAUSE_MAX}s\n\n"
+            f"Daily Quota:\n"
+            f"├ Sent today           : {daily_count}/{DAILY_LIMIT} ({(daily_count/DAILY_LIMIT*100):.1f}%)\n"
+            f"├ Remaining            : {max(0, DAILY_LIMIT - daily_count)}\n"
+            f"├ Reset date           : {daily_reset_date}\n"
+            f"└ Time to reset        : 24h\n\n"
+            f"Queue Status:\n"
+            f"├ Pending items        : {pending_queue.qsize()}\n"
+            f"├ Max queue size       : {MAX_QUEUE_SIZE}\n"
+            f"├ Queue usage          : {(pending_queue.qsize()/MAX_QUEUE_SIZE*100):.1f}%\n"
+            f"├ Unique in queue      : {queue_deduplicator.get_queue_size() if queue_deduplicator else '?'}\n"
+            f"└ Auto-save interval   : {AUTO_SAVE_INTERVAL}s\n\n"
+            f"Global Sent (SHARED):\n"
+            f"├ Total entries        : {global_info['total_entries']}\n"
+            f"├ Total files          : {global_info['total_files']}\n"
+            f"├ Current file         : {global_info['current_file']}\n"
+            f"├ Entries in file      : {global_info['current_count']}/{global_info['max_per_file']}\n"
+            f"├ Last reload          : {global_info['last_reload']}\n"
+            f"└ Reload age           : {global_info['reload_age']}\n\n"
+            f"Flood Control:\n"
+            f"├ Flood count          : {flood_ctrl.flood_count if flood_ctrl else 0}\n"
+            f"├ Total floods         : {flood_ctrl.total_flood if flood_ctrl else 0}\n"
+            f"├ Current penalty      : {flood_ctrl.penalty if flood_ctrl else 0:.0f}s\n"
+            f"├ Is cooling           : {'Yes' if (flood_ctrl.is_cooling if flood_ctrl else False) else 'No'}\n"
+            f"└ Status               : {flood_ctrl.get_status() if flood_ctrl else 'N/A'}\n\n"
+            f"Retry & Error Handling:\n"
+            f"├ Max retries          : {MAX_RETRIES}\n"
+            f"├ Network errors       : Handled with backoff\n"
+            f"└ Flood handling       : Smart penalty system\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💡 Use /tuning to modify settings"
+        )
+        
+        await update.message.reply_text(text)
+    except Exception as e:
+        logging.error(f"❌ Error di cmd_currentconfig: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
+
+async def cmd_presets(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Show preset configurations"""
+    if not is_superadmin(update):
+        await update.message.reply_text("❌ Hanya superadmin")
+        return
+
+    try:
+        text = (
+            "🎯 PRESET CONFIGURATIONS\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "1️⃣ FAST (Aggressive)\n"
+            "├ Delay                : 0.1s + 0.05-0.15s random\n"
+            "├ Group size           : 10 media\n"
+            "├ Group delay          : 5-10s\n"
+            "├ Batch pause          : 1000 media / 20-40s\n"
+            "├ Daily limit          : 5000\n"
+            "└ Use case             : High volume, low priority\n\n"
+            "2️⃣ BALANCED (Default)\n"
+            "├ Delay                : 0.5s + 0.1-0.7s random\n"
+            "├ Group size           : 5 media\n"
+            "├ Group delay          : 15-45s\n"
+            "├ Batch pause          : 500 media / 30-120s\n"
+            "├ Daily limit          : 2500\n"
+            "└ Use case             : Stable, safe sending\n\n"
+            "3️⃣ SAFE (Conservative)\n"
+            "├ Delay                : 1.0s + 0.5-1.5s random\n"
+            "├ Group size           : 3 media\n"
+            "├ Group delay          : 30-60s\n"
+            "├ Batch pause          : 300 media / 60-180s\n"
+            "├ Daily limit          : 1000\n"
+            "└ Use case             : Avoid blocks, important content\n\n"
+            "4️⃣ STEALTH (Maximum Safety)\n"
+            "├ Delay                : 2.0s + 1.0-3.0s random\n"
+            "├ Group size           : 1 media\n"
+            "├ Group delay          : 60-120s\n"
+            "├ Batch pause          : 100 media / 120-300s\n"
+            "├ Daily limit          : 500\n"
+            "└ Use case             : Avoid detection, test accounts\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Apply preset:\n"
+            "/applypreset fast - Apply FAST preset\n"
+            "/applypreset balanced - Apply BALANCED preset\n"
+            "/applypreset safe - Apply SAFE preset\n"
+            "/applypreset stealth - Apply STEALTH preset\n"
+        )
+        
+        await update.message.reply_text(text)
+    except Exception as e:
+        logging.error(f"❌ Error di cmd_presets: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
+
+async def cmd_applypreset(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Apply preset configuration"""
+    if not is_superadmin(update):
+        await update.message.reply_text("❌ Hanya superadmin")
+        return
+
+    if not await admin_rate_limit_check(update.effective_user.id):
+        await update.message.reply_text("⏳ Terlalu cepat, tunggu 5 detik")
+        return
+
+    try:
+        arg = _flatten_arg(context.args)
+        if not arg:
+            await update.message.reply_text(
+                "❌ Contoh: /applypreset balanced\n\n"
+                "Pilihan: fast, balanced, safe, stealth"
+            )
+            return
+
+        preset_name = arg.lower()
+        
+        presets = {
+            "fast": {
+                "delay": 0.1,
+                "random_min": 0.05,
+                "random_max": 0.15,
+                "group_size": 10,
+                "group_delay_min": 5,
+                "group_delay_max": 10,
+                "batch_pause_every": 1000,
+                "batch_pause_min": 20,
+                "batch_pause_max": 40,
+                "daily_limit": 5000,
+            },
+            "balanced": {
+                "delay": 0.5,
+                "random_min": 0.1,
+                "random_max": 0.7,
+                "group_size": 5,
+                "group_delay_min": 15,
+                "group_delay_max": 45,
+                "batch_pause_every": 500,
+                "batch_pause_min": 30,
+                "batch_pause_max": 120,
+                "daily_limit": 2500,
+            },
+            "safe": {
+                "delay": 1.0,
+                "random_min": 0.5,
+                "random_max": 1.5,
+                "group_size": 3,
+                "group_delay_min": 30,
+                "group_delay_max": 60,
+                "batch_pause_every": 300,
+                "batch_pause_min": 60,
+                "batch_pause_max": 180,
+                "daily_limit": 1000,
+            },
+            "stealth": {
+                "delay": 2.0,
+                "random_min": 1.0,
+                "random_max": 3.0,
+                "group_size": 1,
+                "group_delay_min": 60,
+                "group_delay_max": 120,
+                "batch_pause_every": 100,
+                "batch_pause_min": 120,
+                "batch_pause_max": 300,
+                "daily_limit": 500,
+            },
+        }
+
+        if preset_name not in presets:
+            await update.message.reply_text(
+                f"❌ Preset '{preset_name}' tidak ditemukan\n\n"
+                "Pilihan: fast, balanced, safe, stealth"
+            )
+            return
+
+        preset = presets[preset_name]
+        global DELAY_BETWEEN_SEND, DELAY_RANDOM_MIN, DELAY_RANDOM_MAX, \
+               GROUP_SIZE, DELAY_BETWEEN_GROUP_MIN, DELAY_BETWEEN_GROUP_MAX, \
+               BATCH_PAUSE_EVERY, BATCH_PAUSE_MIN, BATCH_PAUSE_MAX, DAILY_LIMIT
+
+        async with config_lock:
+            DELAY_BETWEEN_SEND = preset["delay"]
+            DELAY_RANDOM_MIN = preset["random_min"]
+            DELAY_RANDOM_MAX = preset["random_max"]
+            GROUP_SIZE = preset["group_size"]
+            DELAY_BETWEEN_GROUP_MIN = preset["group_delay_min"]
+            DELAY_BETWEEN_GROUP_MAX = preset["group_delay_max"]
+            BATCH_PAUSE_EVERY = preset["batch_pause_every"]
+            BATCH_PAUSE_MIN = preset["batch_pause_min"]
+            BATCH_PAUSE_MAX = preset["batch_pause_max"]
+            DAILY_LIMIT = preset["daily_limit"]
+
+        config = {
+            "daily_limit": DAILY_LIMIT,
+            "send_delay": DELAY_BETWEEN_SEND,
+            "random_min": DELAY_RANDOM_MIN,
+            "random_max": DELAY_RANDOM_MAX,
+            "group_size": GROUP_SIZE,
+            "group_delay_min": DELAY_BETWEEN_GROUP_MIN,
+            "group_delay_max": DELAY_BETWEEN_GROUP_MAX,
+            "batch_pause_every": BATCH_PAUSE_EVERY,
+            "batch_pause_min": BATCH_PAUSE_MIN,
+            "batch_pause_max": BATCH_PAUSE_MAX,
+        }
+        await state_manager.save_config(config)
+
+        name = update.effective_user.first_name
+        text = (
+            f"✅ Preset '{preset_name.upper()}' diterapkan oleh {name}\n\n"
+            f"Settings:\n"
+            f"├ Delay                : {DELAY_BETWEEN_SEND}s + {DELAY_RANDOM_MIN}-{DELAY_RANDOM_MAX}s random\n"
+            f"├ Group size           : {GROUP_SIZE} media\n"
+            f"├ Group delay          : {DELAY_BETWEEN_GROUP_MIN}-{DELAY_BETWEEN_GROUP_MAX}s\n"
+            f"├ Batch pause          : {BATCH_PAUSE_EVERY} media / {BATCH_PAUSE_MIN}-{BATCH_PAUSE_MAX}s\n"
+            f"└ Daily limit          : {DAILY_LIMIT}"
+        )
+        
+        await update.message.reply_text(text)
+        logging.info(
+            f"⚙️ [BOT: {BOT_NAME}] Preset {preset_name} applied by {name}"
+        )
+    except Exception as e:
+        logging.error(f"❌ Error di cmd_applypreset: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
+
+async def cmd_setrandom(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Set random delay"""
+    if not is_superadmin(update):
+        await update.message.reply_text("❌ Hanya superadmin")
+        return
+
+    if not await admin_rate_limit_check(update.effective_user.id):
+        await update.message.reply_text("⏳ Terlalu cepat, tunggu 5 detik")
+        return
+
+    try:
+        if not context.args or len(context.args) < 2:
+            await update.message.reply_text(
+                "❌ Contoh: /setrandom 0.1 0.7"
+            )
+            return
+
+        try:
+            min_val = float(context.args[0])
+            max_val = float(context.args[1])
+        except (ValueError, IndexError):
+            await update.message.reply_text(
+                "❌ Contoh: /setrandom 0.1 0.7"
+            )
+            return
+
+        if not (0.05 <= min_val <= 5.0) or not (0.05 <= max_val <= 5.0):
+            await update.message.reply_text(
+                "❌ Range harus antara 0.05-5.0 detik"
+            )
+            return
+
+        if min_val >= max_val:
+            await update.message.reply_text(
+                "❌ Min harus lebih kecil dari max"
+            )
+            return
+
+        global DELAY_RANDOM_MIN, DELAY_RANDOM_MAX
+
+        async with config_lock:
+            DELAY_RANDOM_MIN = min_val
+            DELAY_RANDOM_MAX = max_val
+
+        config = {
+            "daily_limit": DAILY_LIMIT,
+            "send_delay": DELAY_BETWEEN_SEND,
+            "random_min": DELAY_RANDOM_MIN,
+            "random_max": DELAY_RANDOM_MAX,
+        }
+        await state_manager.save_config(config)
+
+        name = update.effective_user.first_name
+        await update.message.reply_text(
+            f"✅ Random delay diubah ke {DELAY_RANDOM_MIN}-{DELAY_RANDOM_MAX}s oleh {name}"
+        )
+        logging.info(
+            f"⚙️ [BOT: {BOT_NAME}] Random delay -> {DELAY_RANDOM_MIN}-{DELAY_RANDOM_MAX}s by {name}"
+        )
+    except Exception as e:
+        logging.error(f"❌ Error di cmd_setrandom: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
+        
+async def cmd_setgroupdelay(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Set group delay"""
+    if not is_superadmin(update):
+        await update.message.reply_text("❌ Hanya superadmin")
+        return
+
+    if not await admin_rate_limit_check(update.effective_user.id):
+        await update.message.reply_text("⏳ Terlalu cepat, tunggu 5 detik")
+        return
+
+    try:
+        if not context.args or len(context.args) < 2:
+            await update.message.reply_text(
+                "❌ Contoh: /setgroupdelay 15 45"
+            )
+            return
+
+        try:
+            min_val = int(context.args[0])
+            max_val = int(context.args[1])
+        except (ValueError, IndexError, TypeError):
+            await update.message.reply_text(
+                "❌ Contoh: /setgroupdelay 15 45"
+            )
+            return
+
+        if not (5 <= min_val <= 180) or not (5 <= max_val <= 180):
+            await update.message.reply_text(
+                "❌ Range harus antara 5-180 detik"
+            )
+            return
+
+        if min_val >= max_val:
+            await update.message.reply_text(
+                "❌ Min harus lebih kecil dari max"
+            )
+            return
+
+        global DELAY_BETWEEN_GROUP_MIN, DELAY_BETWEEN_GROUP_MAX
+
+        async with config_lock:
+            DELAY_BETWEEN_GROUP_MIN = min_val
+            DELAY_BETWEEN_GROUP_MAX = max_val
+
+        config = {
+            "group_delay_min": DELAY_BETWEEN_GROUP_MIN,
+            "group_delay_max": DELAY_BETWEEN_GROUP_MAX,
+        }
+        await state_manager.save_config(config)
+
+        name = update.effective_user.first_name
+        await update.message.reply_text(
+            f"✅ Group delay diubah ke {DELAY_BETWEEN_GROUP_MIN}-{DELAY_BETWEEN_GROUP_MAX}s oleh {name}"
+        )
+        logging.info(
+            f"⚙️ [BOT: {BOT_NAME}] Group delay -> {DELAY_BETWEEN_GROUP_MIN}-{DELAY_BETWEEN_GROUP_MAX}s by {name}"
+        )
+    except Exception as e:
+        logging.error(f"❌ Error di cmd_setgroupdelay: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
+
+async def cmd_setgroupsize(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Set group size"""
+    if not is_superadmin(update):
+        await update.message.reply_text("❌ Hanya superadmin")
+        return
+
+    if not await admin_rate_limit_check(update.effective_user.id):
+        await update.message.reply_text("⏳ Terlalu cepat, tunggu 5 detik")
+        return
+
+    try:
+        arg = _flatten_arg(context.args)
+        if not arg:
+            await update.message.reply_text("❌ Contoh: /setgroupsize 5")
+            return
+
+        value = int(arg)
+        if not (1 <= value <= 20):
+            await update.message.reply_text(
+                "❌ Group size harus antara 1-20"
+            )
+            return
+
+        global GROUP_SIZE
+
+        async with config_lock:
+            GROUP_SIZE = value
+
+        config = {"group_size": GROUP_SIZE}
+        await state_manager.save_config(config)
+
+        name = update.effective_user.first_name
+        await update.message.reply_text(
+            f"✅ Group size diubah ke {GROUP_SIZE} oleh {name}"
+        )
+        logging.info(
+            f"⚙️ [BOT: {BOT_NAME}] Group size -> {GROUP_SIZE} by {name}"
+        )
+    except (ValueError, TypeError):
+        await update.message.reply_text("❌ Contoh: /setgroupsize 5")
+    except Exception as e:
+        logging.error(f"❌ Error di cmd_setgroupsize: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
+
+async def cmd_setbatchpause(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Set batch pause"""
+    if not is_superadmin(update):
+        await update.message.reply_text("❌ Hanya superadmin")
+        return
+
+    if not await admin_rate_limit_check(update.effective_user.id):
+        await update.message.reply_text("⏳ Terlalu cepat, tunggu 5 detik")
+        return
+
+    try:
+        if not context.args or len(context.args) < 3:
+            await update.message.reply_text(
+                "❌ Contoh: /setbatchpause 500 30 120"
+            )
+            return
+
+        try:
+            every = int(context.args[0])
+            min_val = int(context.args[1])
+            max_val = int(context.args[2])
+        except (ValueError, IndexError, TypeError):
+            await update.message.reply_text(
+                "❌ Contoh: /setbatchpause 500 30 120"
+            )
+            return
+
+        if not (50 <= every <= 5000):
+            await update.message.reply_text(
+                "❌ Every harus antara 50-5000"
+            )
+            return
+
+        if not (10 <= min_val <= 600) or not (10 <= max_val <= 600):
+            await update.message.reply_text(
+                "❌ Duration harus antara 10-600s"
+            )
+            return
+
+        if min_val >= max_val:
+            await update.message.reply_text(
+                "❌ Min harus lebih kecil dari max"
+            )
+            return
+
+        global BATCH_PAUSE_EVERY, BATCH_PAUSE_MIN, BATCH_PAUSE_MAX
+
+        async with config_lock:
+            BATCH_PAUSE_EVERY = every
+            BATCH_PAUSE_MIN = min_val
+            BATCH_PAUSE_MAX = max_val
+
+        config = {
+            "batch_pause_every": BATCH_PAUSE_EVERY,
+            "batch_pause_min": BATCH_PAUSE_MIN,
+            "batch_pause_max": BATCH_PAUSE_MAX,
+        }
+        await state_manager.save_config(config)
+
+        name = update.effective_user.first_name
+        await update.message.reply_text(
+            f"✅ Batch pause diubah ke {BATCH_PAUSE_EVERY} media / {BATCH_PAUSE_MIN}-{BATCH_PAUSE_MAX}s oleh {name}"
+        )
+        logging.info(
+            f"⚙️ [BOT: {BOT_NAME}] Batch pause -> {BATCH_PAUSE_EVERY}/{BATCH_PAUSE_MIN}-{BATCH_PAUSE_MAX}s by {name}"
+        )
+    except Exception as e:
+        logging.error(f"❌ Error di cmd_setbatchpause: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
+
+async def cmd_setqueuesize(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Set max queue size"""
+    if not is_superadmin(update):
+        await update.message.reply_text("❌ Hanya superadmin")
+        return
+
+    if not await admin_rate_limit_check(update.effective_user.id):
+        await update.message.reply_text("⏳ Terlalu cepat, tunggu 5 detik")
+        return
+
+    try:
+        arg = _flatten_arg(context.args)
+        if not arg:
+            await update.message.reply_text(
+                "❌ Contoh: /setqueuesize 2000"
+            )
+            return
+
+        value = int(arg)
+        if not (100 <= value <= 10000):
+            await update.message.reply_text(
+                "❌ Queue size harus antara 100-10000"
+            )
+            return
+
+        name = update.effective_user.first_name
+        await update.message.reply_text(
+            f"⚠️ Queue size hanya bisa diubah saat bot restart\n"
+            f"Tambah di .env: MAX_QUEUE_SIZE={value}"
+        )
+        logging.info(
+            f"⚠️ [BOT: {BOT_NAME}] Queue size change requested by {name} (needs restart)"
+        )
+    except (ValueError, TypeError):
+        await update.message.reply_text(
+            "❌ Contoh: /setqueuesize 2000"
+        )
+    except Exception as e:
+        logging.error(f"❌ Error di cmd_setqueuesize: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
+
+async def cmd_setfloodpenalty(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Set flood penalty step"""
+    if not is_superadmin(update):
+        await update.message.reply_text("❌ Hanya superadmin")
+        return
+
+    if not await admin_rate_limit_check(update.effective_user.id):
+        await update.message.reply_text("⏳ Terlalu cepat, tunggu 5 detik")
+        return
+
+    try:
+        arg = _flatten_arg(context.args)
+        if not arg:
+            await update.message.reply_text(
+                "❌ Contoh: /setfloodpenalty 15"
+            )
+            return
+
+        value = int(arg)
+        if not (5 <= value <= 50):
+            await update.message.reply_text(
+                "❌ Penalty step harus antara 5-50"
+            )
+            return
+
+        global FLOOD_PENALTY_STEP
+        FLOOD_PENALTY_STEP = value
+
+        name = update.effective_user.first_name
+        await update.message.reply_text(
+            f"✅ Flood penalty step diubah ke {FLOOD_PENALTY_STEP}s oleh {name}"
+        )
+        logging.info(
+            f"⚙️ [BOT: {BOT_NAME}] Flood penalty step -> {FLOOD_PENALTY_STEP}s by {name}"
+        )
+    except (ValueError, TypeError):
+        await update.message.reply_text(
+            "❌ Contoh: /setfloodpenalty 15"
+        )
+    except Exception as e:
+        logging.error(f"❌ Error di cmd_setfloodpenalty: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
+
+async def cmd_setfloodmax(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Set max flood penalty"""
+    if not is_superadmin(update):
+        await update.message.reply_text("❌ Hanya superadmin")
+        return
+
+    if not await admin_rate_limit_check(update.effective_user.id):
+        await update.message.reply_text("⏳ Terlalu cepat, tunggu 5 detik")
+        return
+
+    try:
+        arg = _flatten_arg(context.args)
+        if not arg:
+            await update.message.reply_text(
+                "❌ Contoh: /setfloodmax 300"
+            )
+            return
+
+        value = int(arg)
+        if not (60 <= value <= 600):
+            await update.message.reply_text(
+                "❌ Max penalty harus antara 60-600s"
+            )
+            return
+
+        global FLOOD_MAX_PENALTY
+        FLOOD_MAX_PENALTY = value
+
+        name = update.effective_user.first_name
+        await update.message.reply_text(
+            f"✅ Max flood penalty diubah ke {FLOOD_MAX_PENALTY}s oleh {name}"
+        )
+        logging.info(
+            f"⚙️ [BOT: {BOT_NAME}] Max flood penalty -> {FLOOD_MAX_PENALTY}s by {name}"
+        )
+    except (ValueError, TypeError):
+        await update.message.reply_text(
+            "❌ Contoh: /setfloodmax 300"
+        )
+    except Exception as e:
+        logging.error(f"❌ Error di cmd_setfloodmax: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
+
+async def cmd_resetflood(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Reset flood counter"""
+    if not is_superadmin(update):
+        await update.message.reply_text("❌ Hanya superadmin")
+        return
+
+    if not await admin_rate_limit_check(update.effective_user.id):
+        await update.message.reply_text("⏳ Terlalu cepat, tunggu 5 detik")
+        return
+
+    try:
+        if flood_ctrl:
+            prev_count = flood_ctrl.flood_count
+            prev_total = flood_ctrl.total_flood
+            
+            flood_ctrl.flood_count = 0
+            flood_ctrl.total_flood = 0
+            flood_ctrl.penalty = 0.0
+            flood_ctrl.is_cooling = False
+            flood_ctrl.last_flood_time = None
+            
+            await flood_ctrl.save_state()
+
+            name = update.effective_user.first_name
+            await update.message.reply_text(
+                f"✅ Flood counter direset oleh {name}\n"
+                f"├ Previous count : {prev_count}\n"
+                f"├ Previous total : {prev_total}\n"
+                f"└ Status         : Normal"
+            )
+            logging.info(
+                f"🔄 [BOT: {BOT_NAME}] Flood reset by {name} "
+                f"(count: {prev_count}, total: {prev_total})"
+            )
+        else:
+            await update.message.reply_text("⚠️ Flood controller belum diinisialisasi")
+    except Exception as e:
+        logging.error(f"❌ Error di cmd_resetflood: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
 
 async def cmd_pause(
     update: Update,
@@ -3051,6 +4217,11 @@ async def cmd_flushpending(
         if queue_deduplicator:
             await queue_deduplicator.clear_on_startup()
 
+        try:
+            await queue_manager.save_queue(pending_queue)
+        except Exception as e:
+            logging.error(f"❌ Gagal save queue kosong: {e}")
+
         for i in range(3):
             try:
                 await save_all()
@@ -3091,7 +4262,7 @@ async def cmd_resetdaily(
     try:
         global daily_count, daily_reset_date
         prev = daily_count
-        daily_count      = 0
+        daily_count = 0
         daily_reset_date = datetime.now(timezone.utc).date()
         await save_daily()
         name = update.effective_user.first_name
@@ -3110,7 +4281,7 @@ async def cmd_setlimit(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Set limit command dengan atomic update"""
+    """Set limit command"""
     if not is_superadmin(update):
         await update.message.reply_text(
             "❌ Hanya superadmin yang bisa ubah limit"
@@ -3128,7 +4299,9 @@ async def cmd_setlimit(
     try:
         arg = _flatten_arg(context.args)
         if not arg:
-            await update.message.reply_text("❌ Contoh: /setlimit 1000")
+            await update.message.reply_text(
+                "❌ Contoh: /setlimit 1000"
+            )
             return
         new_limit = int(arg)
         if not (1 <= new_limit <= 5000):
@@ -3138,7 +4311,6 @@ async def cmd_setlimit(
             return
         global DAILY_LIMIT
         
-        # ✅ Atomic update dengan lock
         async with config_lock:
             DAILY_LIMIT = new_limit
             config = {
@@ -3152,10 +4324,12 @@ async def cmd_setlimit(
             f"✅ Daily limit diubah ke {DAILY_LIMIT} oleh {name}"
         )
         logging.info(
-            f"⚙️ [BOT: {BOT_NAME}] Daily limit → {DAILY_LIMIT} oleh {name}"
+            f"⚙️ [BOT: {BOT_NAME}] Daily limit -> {DAILY_LIMIT} oleh {name}"
         )
     except (ValueError, TypeError):
-        await update.message.reply_text("❌ Contoh: /setlimit 1000")
+        await update.message.reply_text(
+            "❌ Contoh: /setlimit 1000"
+        )
     except Exception as e:
         logging.error(f"❌ Error di cmd_setlimit: {e}")
         await update.message.reply_text("❌ Error setting limit")
@@ -3182,7 +4356,9 @@ async def cmd_setdelay(
     try:
         arg = _flatten_arg(context.args)
         if not arg:
-            await update.message.reply_text("❌ Contoh: /setdelay 2.5")
+            await update.message.reply_text(
+                "❌ Contoh: /setdelay 2.5"
+            )
             return
         new_delay = float(arg)
         if not (0.1 <= new_delay <= 10.0):
@@ -3203,11 +4379,13 @@ async def cmd_setdelay(
             f"✅ Delay diubah ke {DELAY_BETWEEN_SEND:.1f}s oleh {name}"
         )
         logging.info(
-            f"⚙️ [BOT: {BOT_NAME}] Send delay → {DELAY_BETWEEN_SEND:.1f}s "
+            f"⚙️ [BOT: {BOT_NAME}] Send delay -> {DELAY_BETWEEN_SEND:.1f}s "
             f"oleh {name}"
         )
     except (ValueError, TypeError):
-        await update.message.reply_text("❌ Contoh: /setdelay 2.5")
+        await update.message.reply_text(
+            "❌ Contoh: /setdelay 2.5"
+        )
     except Exception as e:
         logging.error(f"❌ Error di cmd_setdelay: {e}")
         await update.message.reply_text("❌ Error setting delay")
@@ -3216,7 +4394,7 @@ async def cmd_log(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """✅ Log command dengan error handling"""
+    """Log command dengan error handling"""
     if not is_superadmin(update):
         await update.message.reply_text(
             "❌ Hanya superadmin yang bisa lihat log"
@@ -3235,13 +4413,11 @@ async def cmd_log(
             await update.message.reply_text("❌ File log tidak ditemukan")
             return
         
-        # ✅ Check file size
         file_size = main_log.stat().st_size
         if file_size == 0:
             await update.message.reply_text("📝 File log kosong")
             return
         
-        # ✅ Read dengan safe
         try:
             with open(main_log, "r", encoding="utf-8") as f:
                 lines = f.readlines()
@@ -3253,7 +4429,6 @@ async def cmd_log(
                 log_lines = lines[-20:] if len(lines) > 20 else lines
                 log_text = "".join(log_lines)
                 
-                # ✅ Truncate jika terlalu panjang
                 if len(log_text) > 4000:
                     log_text = "...\n" + log_text[-3996:]
                 
@@ -3270,71 +4445,13 @@ async def cmd_log(
         logging.error(f"❌ Error di cmd_log: {e}")
         await update.message.reply_text(f"❌ Gagal baca log: {e}")
 
-async def cmd_sentfiles(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Sent files command"""
-    if not is_moderator(update):
-        await update.message.reply_text("❌ Akses ditolak")
-        return
-
-    try:
-        files = global_sent_manager._get_all_sent_files()
-        total_cache = len(global_sent_manager._cache)
-
-        if not files:
-            await update.message.reply_text(
-                "📂 Tidak ada file sent tersimpan"
-            )
-            return
-
-        lines = [
-            f"📂 *FILE SENT GLOBAL — SHARED*\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📊 Total cache : {total_cache} entry\n"
-            f"📄 Jumlah file : {len(files)} file\n"
-            f"🔒 Lock Type   : OS-level (fcntl) + asyncio\n"
-            f"🔄 Auto-reload : Setiap 10 detik\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        ]
-
-        for f in files:
-            try:
-                with open(f, "r", encoding="utf-8") as fp:
-                    data = json.load(fp)
-                    count = len(data) if isinstance(data, list) else 0
-                size_kb = f.stat().st_size / 1024
-                is_active = (
-                    "✅ Aktif" if f == global_sent_manager._current_file
-                    else "📦 Arsip"
-                )
-                lines.append(
-                    f"{is_active} | {f.name} | "
-                    f"{count}/{MAX_SENT_PER_FILE} entry | "
-                    f"{size_kb:.1f} KB\n"
-                )
-            except Exception as e:
-                logging.warning(f"⚠️ Error reading file {f.name}: {e}")
-                lines.append(f"❌ {f.name} — Error: {e}\n")
-
-        await update.message.reply_text(
-            "".join(lines),
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        logging.error(f"❌ Error di cmd_sentfiles: {e}")
-        await update.message.reply_text("❌ Error menampilkan sent files")
-
 async def cmd_shutdown(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Shutdown command"""
+    """Shutdown command - graceful shutdown"""
     if not is_superadmin(update):
-        await update.message.reply_text(
-            "❌ Hanya superadmin yang bisa matikan bot"
-        )
+        await update.message.reply_text("❌ Hanya superadmin")
         return
 
     if not await admin_rate_limit_check(update.effective_user.id):
@@ -3343,22 +4460,26 @@ async def cmd_shutdown(
 
     try:
         name = update.effective_user.first_name
-        await update.message.reply_text(f"🛑 Bot dimatikan oleh {name}")
-        logging.info(f"🛑 [BOT: {BOT_NAME}] Bot dimatikan oleh {name}")
-        for i in range(3):
-            try:
-                await save_all()
-                break
-            except Exception as e:
-                logging.error(
-                    f"❌ [BOT: {BOT_NAME}] Gagal save_all saat shutdown "
-                    f"(retry {i+1}/3): {e}"
-                )
-                await asyncio.sleep(5)
-        await context.application.stop()
+        await update.message.reply_text(
+            f"🛑 Bot akan shutdown dalam 5 detik oleh {name}\n"
+            f"Queue akan disimpan otomatis..."
+        )
+        logging.info(
+            f"🛑 [BOT: {BOT_NAME}] Shutdown diminta oleh {name} "
+            f"({update.effective_user.id})"
+        )
+        
+        async def delayed_shutdown():
+            await asyncio.sleep(5)
+            if _shutdown_event:
+                _shutdown_event.set()
+        
+        asyncio.create_task(delayed_shutdown())
+    
     except Exception as e:
         logging.error(f"❌ Error di cmd_shutdown: {e}")
-
+        await update.message.reply_text(f"❌ Error: {e}")
+        
 # ============================================================
 # === FLASK WEB SERVER ===
 # ============================================================
@@ -3459,7 +4580,7 @@ def dashboard():
         <!DOCTYPE html>
         <html>
         <head>
-            <title>HANAYA Bot Dashboard v5.7</title>
+            <title>HANAYA Bot Dashboard v5.9</title>
             <meta charset="utf-8">
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <style>
@@ -3485,6 +4606,7 @@ def dashboard():
                 .status-sending {{ background: #3b82f6; color: white; }}
                 .badge-global {{ background: #8b5cf6; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; }}
                 .badge-safe {{ background: #10b981; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; }}
+                .badge-persist {{ background: #f59e0b; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; }}
                 .footer {{ text-align: center; color: #64748b; font-size: 0.9em; margin-top: 30px; }}
                 .refresh-info {{ text-align: center; color: #94a3b8; font-size: 0.85em; margin-top: 10px; }}
             </style>
@@ -3493,10 +4615,11 @@ def dashboard():
         <body>
             <div class="container">
                 <div class="header">
-                    <h1>🌸 HANAYA Bot v5.7</h1>
+                    <h1>🌸 HANAYA Bot v5.9 — ULTRA STABLE</h1>
                     <p>Dashboard — {BOT_NAME} |
                        <span class="badge-global">GLOBAL SENT</span>
-                       <span class="badge-safe">ANTI-DUPLIKAT AMAN</span>
+                       <span class="badge-safe">ANTI-DUPLIKAT</span>
+                       <span class="badge-persist">QUEUE PERSIST</span>
                     </p>
                 </div>
 
@@ -3589,11 +4712,7 @@ def dashboard():
                     </div>
 
                     <div class="card">
-                        <h3>🔄 Anti-Duplikat</h3>
-                        <div class="stat">
-                            <span class="stat-label">Reload Interval</span>
-                            <span class="stat-value">{global_info['reload_interval']}</span>
-                        </div>
+                        <h3>🔄 Anti-Duplikat & Persist</h3>
                         <div class="stat">
                             <span class="stat-label">Triple-Check</span>
                             <span class="stat-value">✅ Enabled</span>
@@ -3601,6 +4720,10 @@ def dashboard():
                         <div class="stat">
                             <span class="stat-label">Queue Dedup</span>
                             <span class="stat-value">✅ Enabled</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Queue Persist</span>
+                            <span class="stat-value">✅ Auto-save 10s</span>
                         </div>
                         <div class="stat">
                             <span class="stat-label">Atomic Write</span>
@@ -3612,10 +4735,11 @@ def dashboard():
                 <div class="refresh-info">
                     🔄 Auto-refresh setiap 10 detik | API: /health |
                     <span class="badge-global">GLOBAL SENT: data/global/sent/</span> |
+                    <span class="badge-persist">QUEUE: data/{BOT_NAME}/state/queue.json</span> |
                     <span class="badge-safe">✅ FULLY PROTECTED</span>
                 </div>
                 <div class="footer">
-                    <p>HANAYA Bot v5.7 © 2026 | Multi-Bot with Enhanced Duplicate Detection |
+                    <p>HANAYA Bot v5.9 © 2026 | Ultra Stable Multi-Bot with Queue Persistence |
                     Last updated: {now.strftime('%Y-%m-%d %H:%M:%S')} UTC</p>
                 </div>
             </div>
@@ -3667,6 +4791,14 @@ async def on_startup(app) -> None:
     console_mgr.print_status_line("Loading GLOBAL sent files...")
     logging.info(f"📥 [BOT: {BOT_NAME}] Loading GLOBAL sent files...")
     await global_sent_manager.load_all()
+
+    # ✅ PENTING: Load persistent queue DULU
+    console_mgr.print_status_line("Loading persistent queue...")
+    logging.info(f"📥 [BOT: {BOT_NAME}] Loading persistent queue...")
+    queue_loaded = await queue_manager.load_queue(pending_queue)
+    logging.info(
+        f"✅ [BOT: {BOT_NAME}] Queue loaded: {queue_loaded} items"
+    )
 
     console_mgr.print_status_line("Loading LOCAL state...")
     logging.info(f"📥 [BOT: {BOT_NAME}] Loading LOCAL state...")
@@ -3724,6 +4856,25 @@ async def on_shutdown(app) -> None:
         except Exception as e:
             print(f"❌ Error cancel worker: {e}")
             logging.error(f"❌ Error cancel worker: {e}")
+    
+    # ✅ SAVE QUEUE DULU (PENTING!)
+    print("\n💾 Saving queue...")
+    logging.info(f"💾 [BOT: {BOT_NAME}] Saving queue...")
+    for i in range(5):
+        try:
+            await queue_manager.save_queue(pending_queue)
+            queue_size = pending_queue.qsize()
+            print(f"   ✅ Queue saved: {queue_size} items")
+            logging.info(
+                f"✅ [BOT: {BOT_NAME}] Queue saved: {queue_size} items"
+            )
+            break
+        except Exception as e:
+            print(f"   ⚠️  Save attempt {i+1}/5 failed: {e}")
+            logging.error(
+                f"❌ [BOT: {BOT_NAME}] Gagal save queue (retry {i+1}/5): {e}"
+            )
+            await asyncio.sleep(2)
     
     # ✅ Final save dengan retry
     print("\n💾 Final save semua data...")
@@ -3873,20 +5024,37 @@ def main():
     except AttributeError:
         logging.info("⚠️ Sticker filter tidak tersedia")
     
-    # Admin commands
+    # ✅ INFO COMMANDS
     app.add_handler(CommandHandler("ping",         cmd_ping))
     app.add_handler(CommandHandler("help",         cmd_help))
     app.add_handler(CommandHandler("status",       cmd_status))
     app.add_handler(CommandHandler("stats",        cmd_stats))
     app.add_handler(CommandHandler("globalstats",  cmd_globalstats))
+    app.add_handler(CommandHandler("checkqueue",   cmd_checkqueue))
+    app.add_handler(CommandHandler("currentconfig", cmd_currentconfig))
+    app.add_handler(CommandHandler("sentfiles",    cmd_sentfiles))
+    app.add_handler(CommandHandler("log",          cmd_log))
+    
+    # ✅ TUNING COMMANDS
+    app.add_handler(CommandHandler("tuning",       cmd_tuning))
+    app.add_handler(CommandHandler("presets",      cmd_presets))
+    app.add_handler(CommandHandler("applypreset",  cmd_applypreset))
+    app.add_handler(CommandHandler("setdelay",     cmd_setdelay))
+    app.add_handler(CommandHandler("setrandom",    cmd_setrandom))
+    app.add_handler(CommandHandler("setgroupdelay", cmd_setgroupdelay))
+    app.add_handler(CommandHandler("setgroupsize", cmd_setgroupsize))
+    app.add_handler(CommandHandler("setbatchpause", cmd_setbatchpause))
+    app.add_handler(CommandHandler("setlimit",     cmd_setlimit))
+    app.add_handler(CommandHandler("setqueuesize", cmd_setqueuesize))
+    app.add_handler(CommandHandler("setfloodpenalty", cmd_setfloodpenalty))
+    app.add_handler(CommandHandler("setfloodmax",  cmd_setfloodmax))
+    
+    # ✅ MANAGEMENT COMMANDS
     app.add_handler(CommandHandler("pause",        cmd_pause))
     app.add_handler(CommandHandler("resume",       cmd_resume))
     app.add_handler(CommandHandler("flushpending", cmd_flushpending))
     app.add_handler(CommandHandler("resetdaily",   cmd_resetdaily))
-    app.add_handler(CommandHandler("setlimit",     cmd_setlimit))
-    app.add_handler(CommandHandler("setdelay",     cmd_setdelay))
-    app.add_handler(CommandHandler("log",          cmd_log))
-    app.add_handler(CommandHandler("sentfiles",    cmd_sentfiles))
+    app.add_handler(CommandHandler("resetflood",   cmd_resetflood))
     app.add_handler(CommandHandler("shutdown",     cmd_shutdown))
 
     # Start Flask server
