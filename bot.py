@@ -189,6 +189,7 @@ FILE_FLOOD     = STATE_DIR / "flood.json"
 FILE_CONFIG    = STATE_DIR / "config.json"
 FILE_RATELIMIT = STATE_DIR / "ratelimit.json"
 
+
 # ============================================================
 # === CLEAN CONSOLE OUTPUT MANAGER ===
 # ============================================================
@@ -344,6 +345,7 @@ class ConsoleOutputManager:
 ╚════════════════════════════════════════════════════════════════
 """
         print(ready)
+
 
 # ============================================================
 # === ADVANCED LOGGING SYSTEM ===
@@ -595,6 +597,7 @@ def setup_logging(bot_name: str):
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
     logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
+
 # ============================================================
 # === GLOBAL STATE ===
 # ============================================================
@@ -614,6 +617,7 @@ admin_ratelimit:    Dict[int, float]     = {}
 _worker_task:       asyncio.Task | None  = None
 _shutdown_event:    asyncio.Event | None = None
 console_mgr:        ConsoleOutputManager | None = None
+
 
 # ============================================================
 # === HELPER FUNCTIONS ===
@@ -940,6 +944,7 @@ class PersistentQueueManager:
 # ✅ Buat instance
 queue_file = STATE_DIR / "queue.json"
 queue_manager = PersistentQueueManager(queue_file, auto_save_interval=10)
+
 
 # ============================================================
 # === GLOBAL SENT FILE MANAGER ===
@@ -1339,6 +1344,7 @@ global_sent_manager = GlobalSentFileManager(
     reload_interval=10,
 )
 
+
 # ============================================================
 # === LOCAL STATE MANAGER ===
 # ============================================================
@@ -1533,6 +1539,7 @@ class LocalStateManager:
 
 state_manager = LocalStateManager(STATE_DIR)
 
+
 # ============================================================
 # === ENHANCED DUPLICATE DETECTION ===
 # ============================================================
@@ -1650,6 +1657,7 @@ class EnhancedDuplicateChecker:
 
 duplicate_checker: EnhancedDuplicateChecker | None = None
 
+
 # ============================================================
 # === QUEUE DEDUPLICATION ===
 # ============================================================
@@ -1731,6 +1739,7 @@ class QueueDeduplicator:
 
 queue_deduplicator: QueueDeduplicator | None = None
 
+
 # ============================================================
 # === DAILY COUNTER (LOCAL) ===
 # ============================================================
@@ -1749,6 +1758,7 @@ async def check_daily_reset() -> None:
 async def save_daily() -> None:
     """Simpan counter harian ke file lokal"""
     await state_manager.save_daily(daily_count, daily_reset_date)
+
 
 # ============================================================
 # === SMART FLOOD CONTROLLER (LOCAL) ===
@@ -1910,6 +1920,7 @@ class SmartFloodController:
             await state_manager.save_flood(self.to_dict())
         except Exception as e:
             logging.error(f"❌ [LOCAL] Gagal save flood state: {e}")
+
 
 # ============================================================
 # === PERSIST: SAVE & LOAD ALL ===
@@ -2112,6 +2123,7 @@ async def load_local_state() -> None:
         f"Pending: {pending_queue.qsize()}"
     )
 
+
 # ============================================================
 # === FINGERPRINT ===
 # ============================================================
@@ -2239,6 +2251,7 @@ def get_fingerprint(msg) -> dict:
     
     return fp
 
+
 # ============================================================
 # === ADMIN HELPERS ===
 # ============================================================
@@ -2269,6 +2282,7 @@ async def rate_limit_check(user_id: int, interval: int = 60) -> bool:
         user_ratelimit[user_id] = now
         return True
 
+
 async def admin_rate_limit_check(user_id: int, interval: int = 5) -> bool:
     """✅ Rate limit per admin (admin commands) dengan thread-safety"""
     global admin_ratelimit
@@ -2282,6 +2296,7 @@ async def admin_rate_limit_check(user_id: int, interval: int = 5) -> bool:
         
         admin_ratelimit[user_id] = now
         return True
+
 
 def get_target_chat_id() -> int:
     """✅ Pilih target chat (multi-target support) dengan validation"""
@@ -2301,6 +2316,7 @@ def get_target_chat_id() -> int:
         raise ValueError("No valid target chat ID configured")
     
     return random.choice(valid_targets)
+
 
 # ============================================================
 # === SEND MEDIA WITH RETRY (UNIVERSAL - ANTI CRASH) ===
@@ -2601,6 +2617,7 @@ async def send_media_with_retry(
 
     logging.error(f"❌ Gagal kirim setelah {max_retries} percobaan")
     return partial_success
+
 
 # ============================================================
 # === QUEUE WORKER ===
@@ -2956,6 +2973,7 @@ async def queue_worker(bot) -> None:
     finally:
         logging.info(f"✅ [BOT: {BOT_NAME}] Queue worker cleanup selesai")
 
+
 # ============================================================
 # === HANDLERS ===
 # ============================================================
@@ -3064,6 +3082,7 @@ async def forward_media(
     except Exception as e:
         logging.error(f"❌ Error di forward_media handler: {e}", exc_info=True)
 
+
 # ============================================================
 # === ADMIN COMMANDS ===
 # ============================================================
@@ -3076,6 +3095,7 @@ async def cmd_ping(
         await update.message.reply_text("🏓 Pong!")
     except Exception as e:
         logging.error(f"❌ Error di cmd_ping: {e}")
+
 
 async def cmd_help(
     update: Update,
@@ -3133,9 +3153,10 @@ async def cmd_help(
                 "  • safe - Conservative, safe\n"
                 "  • stealth - Maximum safety\n\n"
                 "Superadmin Commands - Management:\n"
-                "/flushpending - Kosongkan queue\n"
+                "/flushpending - Kosongkan queue\n\n"
                 "/resetdaily - Reset daily counter\n"
-                "/resetflood - Reset flood counter\n"
+                "/resetflood - Reset flood counter\n\n"
+                "/restart - Restart bot gracefully\n\n"
                 "/shutdown - Matikan bot\n"
             )
         
@@ -3143,6 +3164,7 @@ async def cmd_help(
     except Exception as e:
         logging.error(f"❌ Error di cmd_help: {e}")
         await update.message.reply_text("❌ Error menampilkan help")
+
 
 async def cmd_status(
     update: Update,
@@ -3213,6 +3235,7 @@ async def cmd_status(
         logging.error(f"❌ Error di cmd_status: {e}")
         await update.message.reply_text("❌ Error menampilkan status")
 
+
 async def cmd_stats(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -3255,6 +3278,7 @@ async def cmd_stats(
     except Exception as e:
         logging.error(f"❌ Error di cmd_stats: {e}")
         await update.message.reply_text("❌ Error menampilkan stats")
+
 
 async def cmd_globalstats(
     update: Update,
@@ -3312,6 +3336,7 @@ async def cmd_globalstats(
         logging.error(f"❌ Error di cmd_globalstats: {e}")
         await update.message.reply_text("❌ Error menampilkan global stats")
 
+
 async def cmd_checkqueue(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -3368,6 +3393,7 @@ async def cmd_checkqueue(
         logging.error(f"❌ Error di cmd_checkqueue: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
 
+
 async def cmd_sentfiles(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -3421,6 +3447,7 @@ async def cmd_sentfiles(
     except Exception as e:
         logging.error(f"❌ Error di cmd_sentfiles: {e}")
         await update.message.reply_text("❌ Error menampilkan sent files")
+
 
 async def cmd_tuning(
     update: Update,
@@ -3479,12 +3506,19 @@ async def cmd_tuning(
             "/presets - Show preset configs\n"
             "/applypreset <name> - Apply preset\n"
             "/currentconfig - Show detailed config\n"
+            "/log - Show latest logs\n\n"
+            "Management:\n"
+            "/pause - Pause worker\n"
+            "/resume - Resume worker\n\n"
+            "/restart - Restart bot gracefully\n\n"
+            "/shutdown - Shutdown bot gracefully\n"
         )
         
         await update.message.reply_text(text)
     except Exception as e:
         logging.error(f"❌ Error di cmd_tuning: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
+
 
 async def cmd_currentconfig(
     update: Update,
@@ -3554,6 +3588,7 @@ async def cmd_currentconfig(
         logging.error(f"❌ Error di cmd_currentconfig: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
 
+
 async def cmd_presets(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -3607,6 +3642,7 @@ async def cmd_presets(
     except Exception as e:
         logging.error(f"❌ Error di cmd_presets: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
+
 
 async def cmd_applypreset(
     update: Update,
@@ -3740,6 +3776,7 @@ async def cmd_applypreset(
         logging.error(f"❌ Error di cmd_applypreset: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
 
+
 async def cmd_setrandom(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -3806,6 +3843,7 @@ async def cmd_setrandom(
         logging.error(f"❌ Error di cmd_setrandom: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
         
+
 async def cmd_setgroupdelay(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -3870,6 +3908,7 @@ async def cmd_setgroupdelay(
         logging.error(f"❌ Error di cmd_setgroupdelay: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
 
+
 async def cmd_setgroupsize(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -3916,6 +3955,7 @@ async def cmd_setgroupsize(
     except Exception as e:
         logging.error(f"❌ Error di cmd_setgroupsize: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
+
 
 async def cmd_setbatchpause(
     update: Update,
@@ -3990,6 +4030,7 @@ async def cmd_setbatchpause(
         logging.error(f"❌ Error di cmd_setbatchpause: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
 
+
 async def cmd_setqueuesize(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -4033,6 +4074,7 @@ async def cmd_setqueuesize(
     except Exception as e:
         logging.error(f"❌ Error di cmd_setqueuesize: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
+
 
 async def cmd_setfloodpenalty(
     update: Update,
@@ -4080,6 +4122,7 @@ async def cmd_setfloodpenalty(
         logging.error(f"❌ Error di cmd_setfloodpenalty: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
 
+
 async def cmd_setfloodmax(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -4126,6 +4169,7 @@ async def cmd_setfloodmax(
         logging.error(f"❌ Error di cmd_setfloodmax: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
 
+
 async def cmd_resetflood(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -4169,6 +4213,7 @@ async def cmd_resetflood(
         logging.error(f"❌ Error di cmd_resetflood: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
 
+
 async def cmd_pause(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -4190,6 +4235,7 @@ async def cmd_pause(
     except Exception as e:
         logging.error(f"❌ Error di cmd_pause: {e}")
 
+
 async def cmd_resume(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -4210,6 +4256,7 @@ async def cmd_resume(
         )
     except Exception as e:
         logging.error(f"❌ Error di cmd_resume: {e}")
+
 
 async def cmd_flushpending(
     update: Update,
@@ -4265,6 +4312,7 @@ async def cmd_flushpending(
         logging.error(f"❌ Error di cmd_flushpending: {e}")
         await update.message.reply_text("❌ Error flushing pending")
 
+
 async def cmd_resetdaily(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -4297,6 +4345,7 @@ async def cmd_resetdaily(
     except Exception as e:
         logging.error(f"❌ Error di cmd_resetdaily: {e}")
         await update.message.reply_text("❌ Error resetting daily")
+
 
 async def cmd_setlimit(
     update: Update,
@@ -4366,6 +4415,7 @@ async def cmd_setlimit(
         logging.error(f"❌ Error di cmd_setlimit: {e}")
         await update.message.reply_text("❌ Error setting limit")
 
+
 async def cmd_setdelay(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -4422,6 +4472,7 @@ async def cmd_setdelay(
         logging.error(f"❌ Error di cmd_setdelay: {e}")
         await update.message.reply_text("❌ Error setting delay")
 
+
 async def cmd_log(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -4477,6 +4528,7 @@ async def cmd_log(
         logging.error(f"❌ Error di cmd_log: {e}")
         await update.message.reply_text(f"❌ Gagal baca log: {e}")
 
+
 async def cmd_shutdown(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -4511,7 +4563,122 @@ async def cmd_shutdown(
     except Exception as e:
         logging.error(f"❌ Error di cmd_shutdown: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def cmd_restart(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """✅ Restart command - graceful restart dengan state save"""
+    if not is_superadmin(update):
+        await update.message.reply_text("❌ Hanya superadmin")
+        return
+
+    if not await admin_rate_limit_check(update.effective_user.id):
+        await update.message.reply_text("⏳ Terlalu cepat, tunggu 5 detik")
+        return
+
+    try:
+        name = update.effective_user.first_name
+        user_id = update.effective_user.id
         
+        # ✅ STEP 1: Notify user
+        await update.message.reply_text(
+            f"🔄 Bot akan RESTART dalam 10 detik oleh {name}\n"
+            f"├─ Saving queue...\n"
+            f"├─ Stopping workers...\n"
+            f"└─ Restarting bot...\n\n"
+            f"⏳ Tunggu ~10-20 detik..."
+        )
+        
+        logging.info(
+            f"🔄 [BOT: {BOT_NAME}] Restart diminta oleh {name} "
+            f"({user_id})"
+        )
+        
+        async def delayed_restart():
+            """Delayed restart dengan proper cleanup"""
+            global _worker_task
+            
+            # ✅ STEP 2: Cancel worker task
+            logging.info(f"⏹️ [BOT: {BOT_NAME}] Cancelling queue worker...")
+            if _worker_task and not _worker_task.done():
+                _worker_task.cancel()
+                try:
+                    await asyncio.wait_for(_worker_task, timeout=8)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+            
+            # ✅ STEP 3: Save queue DULU (CRITICAL!)
+            logging.info(f"💾 [BOT: {BOT_NAME}] Saving queue before restart...")
+            for i in range(3):
+                try:
+                    await queue_manager.save_queue(pending_queue)
+                    queue_size = pending_queue.qsize()
+                    logging.info(
+                        f"✅ [BOT: {BOT_NAME}] Queue saved: {queue_size} items"
+                    )
+                    break
+                except Exception as e:
+                    logging.error(
+                        f"❌ [BOT: {BOT_NAME}] Queue save attempt {i+1}/3 failed: {e}"
+                    )
+                    if i < 2:
+                        await asyncio.sleep(2)
+            
+            # ✅ STEP 4: Save all state
+            logging.info(f"💾 [BOT: {BOT_NAME}] Saving all state...")
+            pending_snapshot = get_queue_snapshot(pending_queue) if pending_queue else []
+            
+            for i in range(3):
+                try:
+                    await state_manager.save_pending(pending_snapshot)
+                    await save_all()
+                    logging.info(
+                        f"✅ [BOT: {BOT_NAME}] All state saved, "
+                        f"{len(pending_snapshot)} pending items"
+                    )
+                    break
+                except Exception as e:
+                    logging.error(
+                        f"❌ [BOT: {BOT_NAME}] State save attempt {i+1}/3 failed: {e}"
+                    )
+                    if i < 2:
+                        await asyncio.sleep(2)
+            
+            # ✅ STEP 5: Trigger restart via signal
+            logging.info(
+                f"🔄 [BOT: {BOT_NAME}] Restart initiated by {name} - "
+                f"Sending shutdown signal..."
+            )
+            if _shutdown_event:
+                _shutdown_event.set()
+            
+            # ✅ Alternative: Use os.execv untuk hard restart
+            logging.info(
+                f"🔄 [BOT: {BOT_NAME}] Executing restart with os.execv..."
+            )
+            try:
+                import os
+                import sys
+                # ✅ Restart dengan argument yang sama
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+            except Exception as e:
+                logging.error(
+                    f"❌ [BOT: {BOT_NAME}] os.execv failed: {e}"
+                )
+        
+        # ✅ Delay 10 detik sebelum restart
+        asyncio.create_task(delayed_restart())
+        logging.info(
+            f"🔄 [BOT: {BOT_NAME}] Restart scheduled in 10 seconds..."
+        )
+    
+    except Exception as e:
+        logging.error(f"❌ Error di cmd_restart: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
+  
+      
 # ============================================================
 # === FLASK WEB SERVER ===
 # ============================================================
@@ -4586,6 +4753,7 @@ def health_check():
             "message": str(e),
             "timestamp": datetime.now(timezone.utc).isoformat()
         }), 500
+
 
 @flask_app.route('/dashboard', methods=['GET'])
 def dashboard():
@@ -4783,6 +4951,7 @@ def dashboard():
         logging.error(f"❌ Error di dashboard: {e}")
         return f"❌ Error: {e}", 500
 
+
 def run_flask():
     """Run Flask server di thread terpisah"""
     try:
@@ -4795,6 +4964,7 @@ def run_flask():
         )
     except Exception as e:
         logging.error(f"❌ Error running Flask: {e}")
+
 
 # ============================================================
 # === STARTUP & SHUTDOWN ===
@@ -4862,6 +5032,7 @@ async def on_startup(app) -> None:
     console_mgr.print_ready()
     
     logging.info(f"🚀 [BOT: {BOT_NAME}] Bot siap!")
+
 
 async def on_shutdown(app) -> None:
     """✅ Shutdown handler dengan proper cleanup"""
@@ -4946,6 +5117,7 @@ async def on_shutdown(app) -> None:
     print("="*70 + "\n")
     logging.info(f"✅ [BOT: {BOT_NAME}] Bot berhenti, data tersimpan")
 
+
 # ============================================================
 # === SIGNAL HANDLER ===
 # ============================================================
@@ -4975,6 +5147,7 @@ def handle_shutdown(signum, frame):
         logging.error(f"❌ Error di handle_shutdown: {e}")
         sys.exit(1)
 
+
 # ============================================================
 # === ERROR HANDLER ===
 # ============================================================
@@ -4993,6 +5166,7 @@ async def error_handler(
         f"   Error: {error}",
         exc_info=error if isinstance(error, Exception) else None
     )
+
 
 # ============================================================
 # === MAIN ===
@@ -5097,6 +5271,7 @@ def main():
     app.add_handler(CommandHandler("resetdaily",   cmd_resetdaily))
     app.add_handler(CommandHandler("resetflood",   cmd_resetflood))
     app.add_handler(CommandHandler("shutdown",     cmd_shutdown))
+    app.add_handler(CommandHandler("restart",      cmd_restart))
 
     # Start Flask server
     flask_thread = threading.Thread(target=run_flask, daemon=True)
