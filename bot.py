@@ -598,22 +598,22 @@ def setup_logging(bot_name: str):
 # ============================================================
 # === GLOBAL STATE ===
 # ============================================================
-pending_queue:   asyncio.Queue | None = None
-is_sending:      bool                 = False
-daily_count:     int                  = 0
-daily_reset_date                      = datetime.now(timezone.utc).date()
-last_save_time                        = datetime.now(timezone.utc)
-sending_lock:    asyncio.Lock | None  = None
-config_lock:     asyncio.Lock | None  = None
-ratelimit_lock:  asyncio.Lock | None  = None
-is_paused:       bool                 = False
-flood_ctrl:      "SmartFloodController | None" = None
-start_time                            = datetime.now(timezone.utc)
-user_ratelimit:  Dict[int, float]     = {}
-admin_ratelimit: Dict[int, float]     = {}
-_worker_task:    asyncio.Task | None  = None
-_shutdown_event: asyncio.Event | None = None
-console_mgr:     ConsoleOutputManager | None = None
+pending_queue:      asyncio.Queue | None = None
+is_sending:         bool                 = False
+daily_count:        int                  = 0
+daily_reset_date:   datetime.date        = datetime.now(timezone.utc).date()
+last_save_time:     datetime             = datetime.now(timezone.utc)
+sending_lock:       asyncio.Lock | None  = None
+config_lock:        asyncio.Lock | None  = None
+ratelimit_lock:     asyncio.Lock | None  = None
+is_paused:          bool                 = False
+flood_ctrl:         "SmartFloodController | None" = None
+start_time:         datetime             = datetime.now(timezone.utc)
+user_ratelimit:     Dict[int, float]     = {}
+admin_ratelimit:    Dict[int, float]     = {}
+_worker_task:       asyncio.Task | None  = None
+_shutdown_event:    asyncio.Event | None = None
+console_mgr:        ConsoleOutputManager | None = None
 
 # ============================================================
 # === HELPER FUNCTIONS ===
@@ -2060,10 +2060,27 @@ async def load_local_state() -> None:
         logging.warning(f"⚠️ [LOCAL] Gagal load flood ctrl: {e}")
 
     # Load LOCAL config dengan proper lock
+  #  try:
+  #      config = await state_manager.load_config()
+   #     if config:
+   #         # ✅ FIX: Use lock untuk update global variables
+   #         async with config_lock:
+  #              if "daily_limit" in config:
+    #                DAILY_LIMIT = int(config["daily_limit"])
+      #              logging.info(f"📥 [LOCAL] Daily limit dimuat: {DAILY_LIMIT}")
+       #         if "send_delay" in config:
+       #             DELAY_BETWEEN_SEND = float(config["send_delay"])
+       #             logging.info(
+       #                 f"📥 [LOCAL] Send delay dimuat: {DELAY_BETWEEN_SEND}s"
+      #              )
+   # except Exception as e:
+  #      logging.warning(f"⚠️ [LOCAL] Gagal load config: {e}")
+
+    # Load LOCAL config dengan proper lock
     try:
         config = await state_manager.load_config()
         if config:
-            # ✅ FIX: Use lock untuk update global variables
+            # ✅ FIX: MUST use lock sebelum modify global variables
             async with config_lock:
                 if "daily_limit" in config:
                     DAILY_LIMIT = int(config["daily_limit"])
@@ -2073,9 +2090,13 @@ async def load_local_state() -> None:
                     logging.info(
                         f"📥 [LOCAL] Send delay dimuat: {DELAY_BETWEEN_SEND}s"
                     )
+                if "random_min" in config:
+                    DELAY_RANDOM_MIN = float(config["random_min"])
+                if "random_max" in config:
+                    DELAY_RANDOM_MAX = float(config["random_max"])
     except Exception as e:
         logging.warning(f"⚠️ [LOCAL] Gagal load config: {e}")
-
+    
     # Load LOCAL ratelimit
     try:
         raw_rl = await state_manager.load_ratelimit()
@@ -4309,13 +4330,24 @@ async def cmd_setlimit(
                 "❌ Limit harus antara 1-5000"
             )
             return
-        global DAILY_LIMIT
+  #      global DAILY_LIMIT
         
+  #      async with config_lock:
+  #          DAILY_LIMIT = new_limit
+   #         config = {
+     #           "daily_limit": DAILY_LIMIT,
+   #             "send_delay": DELAY_BETWEEN_SEND
+   #         }
+   #         await state_manager.save_config(config)
+        
+        global DAILY_LIMIT
+
         async with config_lock:
             DAILY_LIMIT = new_limit
+            delay_snapshot = DELAY_BETWEEN_SEND  # ✅ Ambil snapshot di dalam lock
             config = {
                 "daily_limit": DAILY_LIMIT,
-                "send_delay": DELAY_BETWEEN_SEND
+                "send_delay": delay_snapshot
             }
             await state_manager.save_config(config)
         
