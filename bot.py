@@ -408,7 +408,7 @@ class NetworkErrorFilter(logging.Filter):
         self._lock = threading.Lock()
 
     def _cleanup_cache(self) -> None:
-        """✅ Bersihkan cache yang sudah lama dengan thread-safety"""
+        """Bersihkan cache yang sudah lama dengan thread-safety"""
         now = time.time()
         
         if now - self.last_cleanup < 300:
@@ -579,7 +579,7 @@ def setup_logging(bot_name: str):
     reload_handler.setFormatter(formatter)
     reload_handler.addFilter(LogFilter(filter_type="reload"))
     
-    # ✅ CONSOLE HANDLER YANG CLEAN (hanya important messages)
+    # CONSOLE HANDLER YANG CLEAN (hanya important messages)
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
     console_handler.addFilter(NetworkErrorFilter(max_same_errors=3))
@@ -598,7 +598,7 @@ def setup_logging(bot_name: str):
     root_logger.addHandler(reload_handler)
     root_logger.addHandler(console_handler)
     
-    # ✅ Library logging levels
+    # Library logging levels
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("telegram").setLevel(logging.WARNING)
@@ -639,9 +639,9 @@ _tracked_tasks:     Set[asyncio.Task]    = set()
 # === HELPER FUNCTIONS ===
 # ============================================================
 def get_queue_snapshot(q: asyncio.Queue) -> list:
-    """✅ Ambil snapshot queue dengan aman"""
+    """Ambil snapshot queue dengan aman"""
     try:
-        return list(q._queue)  # type: ignore[attr-defined]
+        return list(q._queue)
     except AttributeError:
         result = []
         temp = []
@@ -661,7 +661,7 @@ def get_queue_snapshot(q: asyncio.Queue) -> list:
 
 
 def _flatten_arg(arg, max_depth: int = 10) -> str | None:
-    """✅ Flatten argument dari command dengan depth limit"""
+    """Flatten argument dari command dengan depth limit"""
     depth = 0
     while isinstance(arg, (list, tuple)) and depth < max_depth:
         if len(arg) == 0:
@@ -681,7 +681,7 @@ def _flatten_arg(arg, max_depth: int = 10) -> str | None:
 
 
 def make_hash(fingerprint: dict) -> str:
-    """✅ Buat hash dari fingerprint dengan normalisasi"""
+    """Buat hash dari fingerprint dengan normalisasi"""
     fp_copy = {
         k: v for k, v in fingerprint.items()
         if k not in ("file_id", "timestamp") and v is not None
@@ -703,7 +703,7 @@ def make_hash(fingerprint: dict) -> str:
 
 
 def parse_retry_after(err: str) -> int:
-    """✅ Parse retry_after dari error message dengan robust handling"""
+    """Parse retry_after dari error message dengan robust handling"""
     err_str = str(err).lower()
     
     patterns = [
@@ -734,7 +734,7 @@ def parse_retry_after(err: str) -> int:
 # === PERSISTENT QUEUE MANAGER ===
 # ============================================================
 class PersistentQueueManager:
-    """✅ Mengelola queue dengan auto-save ke file"""
+    """Mengelola queue dengan auto-save ke file"""
     
     def __init__(self, queue_file: Path, auto_save_interval: int = 10):
         self.queue_file = queue_file
@@ -744,7 +744,7 @@ class PersistentQueueManager:
         self._dirty = False
     
     async def save_queue(self, queue: asyncio.Queue) -> bool:
-        """✅ Simpan queue ke file dengan atomic write dan normalisasi"""
+        """Simpan queue ke file dengan atomic write dan normalisasi"""
         async with self._save_lock:
             try:
                 snapshot = get_queue_snapshot(queue)
@@ -758,7 +758,7 @@ class PersistentQueueManager:
                     self._dirty = False
                     return True
                 
-                # ✅ Normalize semua ke format 3-tuple
+                # Normalize semua ke format 3-tuple
                 normalized = []
                 for item in snapshot:
                     try:
@@ -784,7 +784,7 @@ class PersistentQueueManager:
                     self._dirty = False
                     return True
                 
-                # ✅ Atomic write: tulis ke temp dulu
+                # Atomic write: tulis ke temp dulu
                 temp_file = self.queue_file.with_suffix(".json.tmp")
                 
                 with open(temp_file, "w", encoding="utf-8") as f:
@@ -792,7 +792,7 @@ class PersistentQueueManager:
                     f.flush()
                     os.fsync(f.fileno())
                 
-                # ✅ Atomic rename
+                # Atomic rename
                 if self.queue_file.exists():
                     backup = self.queue_file.with_suffix(".json.backup")
                     try:
@@ -821,9 +821,9 @@ class PersistentQueueManager:
             except Exception as e:
                 logging.error(f"❌ [QUEUE] Gagal save: {e}")
                 return False
-    
+
     async def load_queue(self, queue: asyncio.Queue) -> int:
-        """✅ Load queue dari file dengan recovery dan normalisasi"""
+        """Load queue dari file dengan recovery dan normalisasi ke 3-tuple"""
         try:
             if not self.queue_file.exists():
                 logging.info(f"📂 [QUEUE] File tidak ada, queue kosong")
@@ -839,33 +839,36 @@ class PersistentQueueManager:
             loaded = 0
             for i, item in enumerate(data):
                 try:
-                    # ✅ Validate format
+                    # Validate dan normalize ke 3-tuple
                     if not isinstance(item, (list, tuple)):
                         logging.debug(f"⚠️ [QUEUE] Item {i} bukan list/tuple, skip")
                         continue
                     
-                    if len(item) == 2:
-                        file_id, media_type = item
-                        if not isinstance(file_id, str) or not isinstance(media_type, str):
-                            logging.debug(f"⚠️ [QUEUE] Item {i} type invalid, skip")
-                            continue
-                        if not file_id or not media_type:
-                            logging.debug(f"⚠️ [QUEUE] Item {i} empty string, skip")
-                            continue
-                        item_to_queue = (file_id, media_type, {"file_id": file_id})
+                    # Helper untuk normalize
+                    def normalize_item(raw_item):
+                        """Normalize ke format 3-tuple"""
+                        if len(raw_item) == 2:
+                            file_id, media_type = raw_item
+                            if not isinstance(file_id, str) or not isinstance(media_type, str):
+                                return None
+                            if not file_id or not media_type:
+                                return None
+                            return (file_id, media_type, {"file_id": file_id})
+                        
+                        elif len(raw_item) == 3:
+                            file_id, media_type, fp = raw_item
+                            if not isinstance(file_id, str) or not isinstance(media_type, str) or not isinstance(fp, dict):
+                                return None
+                            if not file_id or not media_type:
+                                return None
+                            return (file_id, media_type, fp)
+                        
+                        return None
                     
-                    elif len(item) == 3:
-                        file_id, media_type, fp = item
-                        if not isinstance(file_id, str) or not isinstance(media_type, str) or not isinstance(fp, dict):
-                            logging.debug(f"⚠️ [QUEUE] Item {i} type invalid, skip")
-                            continue
-                        if not file_id or not media_type:
-                            logging.debug(f"⚠️ [QUEUE] Item {i} empty string, skip")
-                            continue
-                        item_to_queue = (file_id, media_type, fp)
-                    
-                    else:
-                        logging.debug(f"⚠️ [QUEUE] Item {i} invalid length {len(item)}, skip")
+                    # Normalize dan queue
+                    item_to_queue = normalize_item(item)
+                    if item_to_queue is None:
+                        logging.debug(f"⚠️ [QUEUE] Item {i} normalization failed, skip")
                         continue
                     
                     if not queue.full():
@@ -886,7 +889,7 @@ class PersistentQueueManager:
             
             logging.info(f"📥 [QUEUE] Loaded {loaded}/{len(data)} items")
             
-            # ✅ Cleanup backup jika berhasil
+            # Cleanup backup jika berhasil
             backup = self.queue_file.with_suffix(".json.backup")
             if backup.exists():
                 try:
@@ -899,7 +902,7 @@ class PersistentQueueManager:
         except json.JSONDecodeError as e:
             logging.error(f"❌ [QUEUE] JSON corrupt: {e}")
             
-            # ✅ Try recover dari backup
+            # Try recover dari backup
             backup = self.queue_file.with_suffix(".json.backup")
             if backup.exists():
                 try:
@@ -930,7 +933,7 @@ class PersistentQueueManager:
                         except Exception:
                             continue
                     
-                    # ✅ Restore dari backup
+                    # Restore dari backup
                     try:
                         self.queue_file.write_bytes(backup.read_bytes())
                     except Exception:
@@ -957,7 +960,7 @@ class PersistentQueueManager:
         """Mark queue sebagai dirty (ada perubahan)"""
         self._dirty = True
 
-# ✅ Buat instance
+# Buat instance
 queue_file = STATE_DIR / "queue.json"
 queue_manager = PersistentQueueManager(queue_file, auto_save_interval=10)
 
@@ -989,7 +992,7 @@ class GlobalSentFileManager:
         self._file_lock       = threading.Lock()
 
     def _acquire_file_lock(self, fp) -> None:
-        """✅ Kunci file di level OS (antar proses)"""
+        """Kunci file di level OS (antar proses)"""
         if not HAS_FCNTL:
             return
         try:
@@ -998,7 +1001,7 @@ class GlobalSentFileManager:
             logging.warning(f"⚠️ [GLOBAL] Gagal acquire file lock: {e}")
 
     def _release_file_lock(self, fp) -> None:
-        """✅ Lepas kunci file di level OS"""
+        """Lepas kunci file di level OS"""
         if not HAS_FCNTL:
             return
         try:
@@ -1030,7 +1033,7 @@ class GlobalSentFileManager:
             return len(files) + 1
 
     def _has_new_files(self) -> bool:
-        """✅ Cek apakah ada file baru (dengan cache)"""
+        """Cek apakah ada file baru (dengan cache)"""
         try:
             current_files = self._get_all_sent_files()
             
@@ -1049,7 +1052,7 @@ class GlobalSentFileManager:
             return False
 
     def _reload_cache_sync(self, force: bool = False) -> None:
-        """✅ Reload cache dari SEMUA file (SYNCHRONOUS) dengan thread-safety"""
+        """Reload cache dari SEMUA file (SYNCHRONOUS) dengan thread-safety"""
         with self._file_lock:
             try:
                 files = self._get_all_sent_files()
@@ -1094,9 +1097,19 @@ class GlobalSentFileManager:
                 logging.error(f"❌ [GLOBAL] Gagal reload cache sync: {e}")
 
     async def _reload_cache_async_safe(self) -> None:
-        """✅ Reload cache secara async-safe menggunakan executor"""
+        """Reload cache secara async-safe menggunakan executor dengan timeout"""
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, self._reload_cache_sync)
+        try:
+            await asyncio.wait_for(
+                loop.run_in_executor(None, self._reload_cache_sync),
+                timeout=10.0  # Add 10 second timeout
+            )
+        except asyncio.TimeoutError:
+            logging.warning(
+                f"⚠️ [GLOBAL] Cache reload timeout, skipping..."
+            )
+        except Exception as e:
+            logging.error(f"❌ [GLOBAL] Error in async cache reload: {e}")
 
     async def load_all(self) -> None:
         """Load semua file sent ke cache dengan recovery"""
@@ -1136,7 +1149,7 @@ class GlobalSentFileManager:
                 logging.error(f"❌ [GLOBAL] JSON corrupt {f.name}: {e}")
                 corrupted.append(f)
                 
-                # ✅ Try backup
+                # Try backup
                 backup = f.with_suffix(".json.backup")
                 if backup.exists():
                     try:
@@ -1197,13 +1210,13 @@ class GlobalSentFileManager:
         )
 
     async def _init_new_file(self) -> None:
-        """✅ Buat file sent baru dengan safety check"""
+        """Buat file sent baru dengan safety check"""
         idx = self._get_next_file_index()
         self._current_file  = self.sent_dir / f"{self.prefix}_{idx:04d}.json"
         self._current_count = 0
 
         try:
-            # ✅ Check file sudah ada
+            # Check file sudah ada
             if self._current_file.exists():
                 logging.warning(
                     f"⚠️ [GLOBAL] File sudah ada: {self._current_file.name}, "
@@ -1229,7 +1242,7 @@ class GlobalSentFileManager:
                 if self._current_count < self.max_per_file:
                     return
             
-            # ✅ Create new file
+            # Create new file
             with open(self._current_file, "w", encoding="utf-8") as fp:
                 self._acquire_file_lock(fp)
                 try:
@@ -1244,7 +1257,7 @@ class GlobalSentFileManager:
             logging.error(f"❌ [GLOBAL] Gagal buat file: {e}")
 
     async def add(self, key: str) -> None:
-        """✅ Tambahkan key ke file sent (dengan double-check dan atomic write)"""
+        """Tambahkan key ke file sent (dengan double-check dan atomic write)"""
         async with self._async_lock:
             if key in self._cache:
                 return
@@ -1317,7 +1330,7 @@ class GlobalSentFileManager:
                 self._cache.add(key)
 
     def check(self, key: str) -> bool:
-        """✅ Cek apakah key sudah ada (thread-safe untuk read)"""
+        """Cek apakah key sudah ada (thread-safe untuk read)"""
         if key in self._cache:
             return True
 
@@ -1327,7 +1340,20 @@ class GlobalSentFileManager:
 
         if cache_stale or has_new:
             try:
-                self._reload_cache_sync()
+                # Gunakan timeout untuk avoid hanging
+                import threading
+                reload_thread = threading.Thread(
+                    target=self._reload_cache_sync,
+                    daemon=True,
+                    name="cache_reload"
+                )
+                reload_thread.start()
+                reload_thread.join(timeout=5.0)  # ← Add 5 second timeout
+                
+                if reload_thread.is_alive():
+                    logging.warning(
+                        f"⚠️ Cache reload timeout, skipping..."
+                    )
             except Exception as e:
                 logging.error(f"❌ Error reload di check(): {e}")
         
@@ -1397,9 +1423,9 @@ class LocalStateManager:
         self.state_dir = state_dir
 
     async def save_pending(self, pending: list) -> None:
-        """✅ Simpan pending dengan normalisasi format ke 3-tuple"""
+        """Simpan pending dengan normalisasi format ke 3-tuple"""
         try:
-            # ✅ Normalize semua ke format 3-tuple
+            # Normalize semua ke format 3-tuple
             normalized = []
             for item in pending:
                 try:
@@ -1423,7 +1449,7 @@ class LocalStateManager:
             logging.error(f"❌ [LOCAL] Gagal save pending: {e}")
 
     async def load_pending(self) -> list:
-        """✅ Load pending dengan validasi format yang benar"""
+        """Load pending dengan validasi format yang benar"""
         try:
             if not FILE_PENDING.exists():
                 return []
@@ -1435,11 +1461,11 @@ class LocalStateManager:
                     logging.warning(f"⚠️ Pending file bukan list, skip")
                     return []
                 
-                # ✅ Validate setiap item dengan format yang benar
+                # Validate setiap item dengan format yang benar
                 valid_items = []
                 for i, item in enumerate(data):
                     try:
-                        # ✅ Support 2-tuple (old) dan 3-tuple (new)
+                        # Support 2-tuple (old) dan 3-tuple (new)
                         if isinstance(item, (list, tuple)):
                             if len(item) == 2:
                                 # Old format: (file_id, media_type)
@@ -1591,14 +1617,14 @@ class EnhancedDuplicateChecker:
     def __init__(self, sent_manager: GlobalSentFileManager):
         self.sent_manager = sent_manager
         self._check_lock = asyncio.Lock()
-    
+
     async def is_duplicate_safe(
         self,
         file_id: str,
         fp_hash: str,
         timeout: float = 10.0
     ) -> bool:
-        """✅ Triple-check untuk duplikat dengan timeout"""
+        """Triple-check untuk duplikat dengan timeout"""
         async with self._check_lock:
             # CHECK 1: Cache (cepat)
             if self.sent_manager.check(file_id):
@@ -1612,8 +1638,7 @@ class EnhancedDuplicateChecker:
                 await asyncio.wait_for(
                     loop.run_in_executor(
                         None,
-                        self.sent_manager._reload_cache_sync,
-                        True
+                        self.sent_manager._reload_cache_sync
                     ),
                     timeout=timeout
                 )
@@ -1717,7 +1742,7 @@ class QueueDeduplicator:
         fp_hash: str,
         item: tuple
     ) -> bool:
-        """✅ Tambah item ke queue dengan cek duplikat"""
+        """Tambah item ke queue dengan cek duplikat"""
         async with self._lock:
             composite_key = f"{file_id}:{fp_hash}"
             
@@ -1729,7 +1754,7 @@ class QueueDeduplicator:
                 )
                 return False
             
-            # ✅ Cek ukuran maksimum
+            # Cek ukuran maksimum
             if len(self._queue_items) >= self._max_size:
                 logging.warning(
                     f"⚠️ [QUEUE] Deduplicator penuh ({self._max_size}), "
@@ -1771,7 +1796,7 @@ class QueueDeduplicator:
             logging.info("🔄 [QUEUE] Deduplicator cleared on startup")
     
     async def cleanup_stale(self, max_age_seconds: int = 3600) -> None:
-        """✅ Bersihkan item yang sudah lama dengan TTL"""
+        """Bersihkan item yang sudah lama dengan TTL"""
         async with self._lock:
             now = time.time()
             stale = [
@@ -1786,7 +1811,7 @@ class QueueDeduplicator:
                     f"🧹 [QUEUE] Cleaned {len(stale)} stale items from deduplicator"
                 )
             
-            # ✅ Jika penuh, cleanup agresif
+            # Jika penuh, cleanup agresif
             if len(self._queue_items) > self._max_size * 0.9:
                 old_size = len(self._queue_items)
                 self._queue_items.clear()
@@ -1898,7 +1923,7 @@ class SmartFloodController:
         return total_wait
 
     async def record_success(self) -> None:
-        """✅ Catat pengiriman sukses dengan penalty decay"""
+        """Catat pengiriman sukses dengan penalty decay"""
         if self.penalty > 0:
             decay_rate = 10.0
             self.penalty = max(0.0, self.penalty - decay_rate)
@@ -1983,11 +2008,11 @@ class SmartFloodController:
 # === PERSIST: SAVE & LOAD ALL ===
 # ============================================================
 async def save_all() -> None:
-    """✅ Simpan semua state dengan atomic semantics"""
+    """Simpan semua state dengan atomic semantics"""
     global last_save_time
 
     try:
-        # ✅ Collect semua data dulu
+        # Collect semua data dulu
         pending_snapshot = get_queue_snapshot(pending_queue) if pending_queue else []
         
         daily_data = {
@@ -2012,7 +2037,7 @@ async def save_all() -> None:
         
         ratelimit_data = {str(k): v for k, v in user_ratelimit.items()}
         
-        # ✅ Save semua dengan error handling per item
+        # Save semua dengan error handling per item
         errors = []
         
         try:
@@ -2045,7 +2070,7 @@ async def save_all() -> None:
             logging.error(f"❌ [LOCAL] Gagal save ratelimit: {e}")
             errors.append(("ratelimit", e))
         
-        # ✅ Report hasil
+        # Report hasil
         if errors:
             failed = [name for name, _ in errors]
             logging.warning(
@@ -2061,14 +2086,14 @@ async def save_all() -> None:
 
 
 async def load_local_state() -> None:
-    """✅ Load LOCAL state SAJA dengan proper locking - NO DUPLICATE PENDING"""
+    """Load LOCAL state SAJA dengan proper locking - NO DUPLICATE PENDING"""
     global daily_count, daily_reset_date, DAILY_LIMIT, \
            DELAY_BETWEEN_SEND, DELAY_RANDOM_MIN, DELAY_RANDOM_MAX, \
            GROUP_SIZE, DELAY_BETWEEN_GROUP_MIN, DELAY_BETWEEN_GROUP_MAX, \
            BATCH_PAUSE_EVERY, BATCH_PAUSE_MIN, BATCH_PAUSE_MAX, \
            flood_ctrl, user_ratelimit
 
-    # ✅ SKIP loading pending - sudah di-load oleh queue_manager.load_queue()
+    # SKIP loading pending - sudah di-load oleh queue_manager.load_queue()
     # Hanya cleanup backup file jika ada
     try:
         backup = FILE_PENDING.with_suffix(".json.backup")
@@ -2081,18 +2106,23 @@ async def load_local_state() -> None:
     except Exception as e:
         logging.warning(f"⚠️ [LOCAL] Error cleanup backup: {e}")
 
-    # Load LOCAL daily
+    # Load LOCAL daily with proper locking
     try:
-        daily_count, daily_reset_date = await state_manager.load_daily()
+        loaded_count, loaded_date = await state_manager.load_daily()
+        async with sending_lock:
+            daily_count = loaded_count
+            daily_reset_date = loaded_date
         logging.info(f"📥 [LOCAL] Daily dimuat: {daily_count}/{DAILY_LIMIT}")
     except Exception as e:
         logging.warning(f"⚠️ [LOCAL] Gagal load daily: {e}")
 
-    # Load LOCAL flood
+    # Load LOCAL flood with proper locking
     try:
         flood_data = await state_manager.load_flood()
         if flood_data:
-            flood_ctrl = SmartFloodController.from_dict(flood_data)
+            new_flood_ctrl = SmartFloodController.from_dict(flood_data)
+            async with sending_lock:
+                flood_ctrl = new_flood_ctrl
             logging.info(
                 f"📥 [LOCAL] Flood ctrl dimuat: {flood_ctrl.get_status()}"
             )
@@ -2168,7 +2198,7 @@ async def load_local_state() -> None:
 # === FINGERPRINT ===
 # ============================================================
 def get_fingerprint(msg) -> dict:
-    """✅ Ambil fingerprint dari message dengan support SEMUA media type"""
+    """Ambil fingerprint dari message dengan support SEMUA media type"""
     fp = {
         "file_id":    None,
         "media_type": None,
@@ -2309,7 +2339,7 @@ def is_moderator(update: Update) -> bool:
     return get_role(update) in ("superadmin", "moderator")
 
 async def rate_limit_check(user_id: int, interval: int = 60) -> bool:
-    """✅ Rate limit per user (forward media) dengan thread-safety"""
+    """Rate limit per user (forward media) dengan thread-safety"""
     global user_ratelimit
     
     async with ratelimit_lock:
@@ -2324,7 +2354,7 @@ async def rate_limit_check(user_id: int, interval: int = 60) -> bool:
 
 
 async def admin_rate_limit_check(user_id: int, interval: int = 5) -> bool:
-    """✅ Rate limit per admin (admin commands) dengan thread-safety"""
+    """Rate limit per admin (admin commands) dengan thread-safety"""
     global admin_ratelimit
     
     async with ratelimit_lock:
@@ -2339,7 +2369,7 @@ async def admin_rate_limit_check(user_id: int, interval: int = 5) -> bool:
 
 
 def get_target_chat_id() -> int:
-    """✅ Pilih target chat (multi-target support) dengan validation"""
+    """Pilih target chat (multi-target support) dengan validation"""
     valid_targets = []
     
     if TARGET_CHAT_ID != 0:
@@ -2367,7 +2397,7 @@ async def send_media_with_retry(
     media_items: List[Tuple[str, str]],
     max_retries: int = MAX_RETRIES,
 ) -> bool:
-    """✅ Kirim media universal dengan retry, partial success, dan error handling"""
+    """Kirim media universal dengan retry, partial success, dan error handling"""
     
     if not media_items:
         return False
@@ -2391,7 +2421,7 @@ async def send_media_with_retry(
     attempt = 0
     partial_success = False
     
-    # ✅ Helper function untuk retry dengan backoff
+    # Helper function untuk retry dengan backoff
     async def send_with_backoff(send_func, media_type: str, max_attempts: int = 3):
         """Helper untuk send dengan exponential backoff"""
         for attempt in range(max_attempts):
@@ -2418,7 +2448,7 @@ async def send_media_with_retry(
     
     while attempt < max_retries:
         try:
-            # 1. KIRIM VIDEO (GROUP) — ✅
+            # 1. KIRIM VIDEO (GROUP)
             if media_groups["video"]:
                 try:
                     media_group = [
@@ -2441,7 +2471,7 @@ async def send_media_with_retry(
                 except Exception as e:
                     logging.error(f"❌ Error kirim video: {e}")
             
-            # 2. KIRIM PHOTO (GROUP) — ✅
+            # 2. KIRIM PHOTO (GROUP)
             if media_groups["photo"]:
                 try:
                     media_group = [
@@ -2464,7 +2494,7 @@ async def send_media_with_retry(
                 except Exception as e:
                     logging.error(f"❌ Error kirim photo: {e}")
             
-            # 3. KIRIM DOCUMENT (INDIVIDUAL) — ✅
+            # 3. KIRIM DOCUMENT (INDIVIDUAL)
             if media_groups["document"]:
                 sent_count = 0
                 for fid in media_groups["document"]:
@@ -2487,7 +2517,7 @@ async def send_media_with_retry(
                     partial_success = True
                     media_groups["document"] = []
             
-            # 4. KIRIM AUDIO (INDIVIDUAL) — ✅
+            # 4. KIRIM AUDIO (INDIVIDUAL)
             if media_groups["audio"]:
                 sent_count = 0
                 for fid in media_groups["audio"]:
@@ -2510,7 +2540,7 @@ async def send_media_with_retry(
                     partial_success = True
                     media_groups["audio"] = []
             
-            # 5. KIRIM ANIMATION (INDIVIDUAL) — ✅
+            # 5. KIRIM ANIMATION (INDIVIDUAL)
             if media_groups["animation"]:
                 sent_count = 0
                 for fid in media_groups["animation"]:
@@ -2533,7 +2563,7 @@ async def send_media_with_retry(
                     partial_success = True
                     media_groups["animation"] = []
             
-            # 6. KIRIM VOICE (INDIVIDUAL) — ✅
+            # 6. KIRIM VOICE (INDIVIDUAL)
             if media_groups["voice"]:
                 sent_count = 0
                 for fid in media_groups["voice"]:
@@ -2556,7 +2586,7 @@ async def send_media_with_retry(
                     partial_success = True
                     media_groups["voice"] = []
             
-            # 7. KIRIM VIDEO NOTE (INDIVIDUAL) — ✅
+            # 7. KIRIM VIDEO NOTE (INDIVIDUAL)
             if media_groups["video_note"]:
                 sent_count = 0
                 for fid in media_groups["video_note"]:
@@ -2579,7 +2609,7 @@ async def send_media_with_retry(
                     partial_success = True
                     media_groups["video_note"] = []
             
-            # 8. KIRIM STICKER (INDIVIDUAL) — ✅
+            # 8. KIRIM STICKER (INDIVIDUAL)
             if media_groups["sticker"]:
                 sent_count = 0
                 for fid in media_groups["sticker"]:
@@ -2602,7 +2632,7 @@ async def send_media_with_retry(
                     partial_success = True
                     media_groups["sticker"] = []
             
-            # ✅ Jika ada partial success, return True
+            # Jika ada partial success, return True
             if partial_success:
                 return True
             
@@ -2627,10 +2657,11 @@ async def send_media_with_retry(
                         f"⏳ Flood wait {total_wait:.1f}s sebelum retry..."
                     )
                     await asyncio.sleep(total_wait)
+                    attempt += 1  # ✅ Increment attempt counter
                     continue
                 except Exception as flood_err:
                     logging.error(f"❌ Error handling flood: {flood_err}")
-                    attempt += 1
+                    attempt += 1  # ✅ Increment attempt counter even on error
                     await asyncio.sleep(60)
                     continue
 
@@ -2690,7 +2721,7 @@ async def send_media_with_retry(
 # === ADMIN COMMAND PROCESSOR (THREAD-SAFE) ===
 # ============================================================
 async def admin_command_processor() -> None:
-    """✅ Process admin commands dari Flask dengan thread-safe queue"""
+    """Process admin commands dari Flask dengan thread-safe queue"""
     global admin_command_queue, DELAY_BETWEEN_SEND, DELAY_RANDOM_MIN, DELAY_RANDOM_MAX, \
            GROUP_SIZE, DELAY_BETWEEN_GROUP_MIN, DELAY_BETWEEN_GROUP_MAX, \
            BATCH_PAUSE_EVERY, BATCH_PAUSE_MIN, BATCH_PAUSE_MAX, DAILY_LIMIT, \
@@ -2704,15 +2735,12 @@ async def admin_command_processor() -> None:
     try:
         while not _shutdown_event.is_set():
             try:
-                # ✅ Non-blocking get — tidak memblokir event loop
                 try:
                     command = admin_command_queue.get_nowait()
                 except stdlib_queue.Empty:
-                    # Yield ke event loop, cek lagi setelah 200ms
                     await asyncio.sleep(0.2)
                     continue
 
-                # ✅ Double-check shutdown setelah dapat command
                 if _shutdown_event.is_set():
                     logging.info(f"🔄 [ADMIN] Shutdown detected, stopping processor")
                     break
@@ -2722,7 +2750,7 @@ async def admin_command_processor() -> None:
 
                 logging.info(f"🔄 [ADMIN] Processing command: {cmd_type}")
 
-                # ✅ APPLY PRESET
+                # APPLY PRESET
                 if cmd_type == "apply_preset":
                     try:
                         preset_name = cmd_data.get("preset", "").lower()
@@ -2785,6 +2813,7 @@ async def admin_command_processor() -> None:
                         preset = presets[preset_name]
 
                         async with config_lock:
+                            # ✅ Sekarang sudah OK assign, karena global sudah di-declare
                             DELAY_BETWEEN_SEND      = preset["delay"]
                             DELAY_RANDOM_MIN        = preset["random_min"]
                             DELAY_RANDOM_MAX        = preset["random_max"]
@@ -2817,10 +2846,11 @@ async def admin_command_processor() -> None:
                     except Exception as e:
                         logging.error(f"❌ [ADMIN] Error applying preset: {e}")
 
-                # ✅ RESET DAILY
+                # RESET DAILY
                 elif cmd_type == "reset_daily":
                     try:
                         async with sending_lock:
+                            # ✅ Sekarang sudah OK karena global sudah di-declare
                             prev        = daily_count
                             daily_count = 0
                             daily_reset_date = datetime.now(timezone.utc).date()
@@ -2829,23 +2859,27 @@ async def admin_command_processor() -> None:
                     except Exception as e:
                         logging.error(f"❌ [ADMIN] Error resetting daily: {e}")
 
-                # ✅ PAUSE WORKER
+                # PAUSE WORKER
                 elif cmd_type == "pause_worker":
                     try:
-                        is_paused = True
+                        async with sending_lock:
+                            # ✅ Sekarang sudah OK karena global sudah di-declare
+                            is_paused = True
                         logging.info(f"⏸️ [ADMIN] Worker paused")
                     except Exception as e:
                         logging.error(f"❌ [ADMIN] Error pausing worker: {e}")
 
-                # ✅ RESUME WORKER
+                # RESUME WORKER
                 elif cmd_type == "resume_worker":
                     try:
-                        is_paused = False
+                        async with sending_lock:
+                            # ✅ Sekarang sudah OK karena global sudah di-declare
+                            is_paused = False
                         logging.info(f"▶️ [ADMIN] Worker resumed")
                     except Exception as e:
                         logging.error(f"❌ [ADMIN] Error resuming worker: {e}")
 
-                # ✅ FLUSH QUEUE
+                # FLUSH QUEUE
                 elif cmd_type == "flush_queue":
                     try:
                         count = pending_queue.qsize()
@@ -2866,7 +2900,7 @@ async def admin_command_processor() -> None:
                     except Exception as e:
                         logging.error(f"❌ [ADMIN] Error flushing queue: {e}")
 
-                # ✅ RESTART BOT
+                # RESTART BOT
                 elif cmd_type == "restart_bot":
                     try:
                         global _worker_task
@@ -2928,7 +2962,7 @@ async def admin_command_processor() -> None:
                     logging.warning(f"⚠️ [ADMIN] Unknown command type: {cmd_type}")
 
             except asyncio.CancelledError:
-                raise  # ← Biarkan propagate ke outer try
+                raise
             except Exception as e:
                 logging.error(f"❌ [ADMIN] Command processor error: {e}")
                 await asyncio.sleep(1)
@@ -2946,7 +2980,7 @@ async def admin_command_processor() -> None:
 # === QUEUE WORKER (PRODUCTION-READY) ===
 # ============================================================
 async def queue_worker(bot) -> None:
-    """✅ Main worker untuk kirim media universal dengan error recovery"""
+    """Main worker untuk kirim media universal dengan error recovery"""
     global daily_count, is_sending, is_paused, flood_ctrl
 
     if flood_ctrl is None:
@@ -2992,7 +3026,7 @@ async def queue_worker(bot) -> None:
                             break
 
                 except asyncio.TimeoutError:
-                    # ✅ Auto-save queue secara periodik
+                    # Auto-save queue secara periodik
                     now = datetime.now(timezone.utc)
                     if (now - last_queue_save).total_seconds() >= 10:
                         try:
@@ -3007,7 +3041,7 @@ async def queue_worker(bot) -> None:
                 if not batch:
                     continue
 
-                # ✅ Track berapa item yang benar-benar di-get dari queue
+                # Track berapa item yang benar-benar di-get dari queue
                 items_gotten = len(batch)
 
                 # Proses batch
@@ -3016,12 +3050,12 @@ async def queue_worker(bot) -> None:
 
                 for item in batch:
                     try:
-                        # ✅ Handle berbagai format dengan normalisasi
+                        # Handle berbagai format dengan normalisasi
                         if not isinstance(item, (list, tuple)):
                             logging.warning(f"⚠️ Item queue bukan list/tuple, skip")
                             continue
                         
-                        # ✅ Normalize ke format 3-tuple (file_id, media_type, fp)
+                        # Normalize ke format 3-tuple (file_id, media_type, fp)
                         if len(item) == 2:
                             # Old format: (file_id, media_type)
                             file_id, media_type = item
@@ -3035,7 +3069,7 @@ async def queue_worker(bot) -> None:
                             )
                             continue
                         
-                        # ✅ Validate types
+                        # Validate types
                         if not isinstance(file_id, str) or not file_id:
                             logging.warning(f"⚠️ File ID invalid, skip")
                             continue
@@ -3082,7 +3116,7 @@ async def queue_worker(bot) -> None:
 
                 if not media_items:
                     is_sending = False
-                    # ✅ Hanya panggil task_done sebanyak item yang di-get
+                    # Hanya panggil task_done sebanyak item yang di-get
                     for _ in range(items_gotten):
                         try:
                             pending_queue.task_done()
@@ -3126,7 +3160,7 @@ async def queue_worker(bot) -> None:
                 if success:
                     try:
                         async with sending_lock:
-                            # ✅ Add upper bound
+                            # Add upper bound
                             daily_count = min(
                                 daily_count + len(media_items),
                                 DAILY_LIMIT + len(media_items)
@@ -3158,7 +3192,7 @@ async def queue_worker(bot) -> None:
                             f"Queue unique: {queue_deduplicator.get_queue_size() if queue_deduplicator else '?'}"
                         )
                         
-                        # ✅ Save queue after success
+                        # Save queue after success
                         try:
                             await queue_manager.save_queue(pending_queue)
                             last_queue_save = datetime.now(timezone.utc)
@@ -3173,7 +3207,7 @@ async def queue_worker(bot) -> None:
                         for file_id, media_type, fp_hash, fp_original in media_items:
                             try:
                                 if not pending_queue.full():
-                                    # ✅ Kembalikan fp original
+                                    # Kembalikan fp original
                                     await pending_queue.put(
                                         (file_id, media_type, fp_original)
                                     )
@@ -3194,7 +3228,7 @@ async def queue_worker(bot) -> None:
                             f"dikembalikan ke queue"
                         )
                         
-                        # ✅ Save queue after failure
+                        # Save queue after failure
                         try:
                             await queue_manager.save_queue(pending_queue)
                             last_queue_save = datetime.now(timezone.utc)
@@ -3204,7 +3238,7 @@ async def queue_worker(bot) -> None:
                     except Exception as e:
                         logging.error(f"❌ Error processing failure: {e}")
 
-                # ✅ Task done HANYA untuk items yang di-get, bukan yang di-put kembali
+                # Task done HANYA untuk items yang di-get, bukan yang di-put kembali
                 for _ in range(items_gotten):
                     try:
                         pending_queue.task_done()
@@ -3269,7 +3303,7 @@ async def queue_worker(bot) -> None:
                 )
                 is_sending = False
                 
-                # ✅ FINAL SAVE QUEUE
+                # FINAL SAVE QUEUE
                 try:
                     await queue_manager.save_queue(pending_queue)
                     logging.info(
@@ -3280,7 +3314,7 @@ async def queue_worker(bot) -> None:
                         f"❌ [BOT: {BOT_NAME}] Gagal save queue saat cancel: {e}"
                     )
                 
-                # ✅ FINAL SAVE ALL
+                # FINAL SAVE ALL
                 try:
                     pending_snapshot = get_queue_snapshot(pending_queue)
                     await state_manager.save_pending(pending_snapshot)
@@ -3321,19 +3355,19 @@ async def forward_media(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """✅ Handler untuk forward media universal dengan enhanced duplicate check"""
+    """Handler untuk forward media universal dengan enhanced duplicate check"""
     msg = update.message
     if not msg:
         return
 
-    # ✅ Check source chat dulu
+    # Check source chat dulu
     if (
         ALLOWED_SOURCE_CHATS and
         update.effective_chat.id not in ALLOWED_SOURCE_CHATS
     ):
         return
 
-    # ✅ Cek apakah message memiliki media
+    # Cek apakah message memiliki media
     has_media = (
         msg.video or msg.document or msg.photo or msg.audio or
         msg.animation or msg.voice or msg.video_note or msg.sticker
@@ -3343,7 +3377,7 @@ async def forward_media(
         return
 
     try:
-        # ✅ Get fingerprint dengan error handling
+        # Get fingerprint dengan error handling
         try:
             fp = get_fingerprint(msg)
         except Exception as e:
@@ -3356,7 +3390,7 @@ async def forward_media(
         
         media_type = fp.get("media_type")
         
-        # ✅ Cek apakah media type diizinkan
+        # Cek apakah media type diizinkan
         if media_type not in ALLOWED_MEDIA_TYPES:
             logging.info(
                 f"⏭️ [BOT: {BOT_NAME}] Media type '{media_type}' tidak diizinkan"
@@ -3368,7 +3402,7 @@ async def forward_media(
         mtype    = fp["media_type"]
         file_name = fp.get("file_name", "unknown")
 
-        # ✅ CHECK 1: GLOBAL SENT
+        # CHECK 1: GLOBAL SENT
         try:
             if await duplicate_checker.is_duplicate_safe(file_id, fp_hash):
                 logging.info(
@@ -3379,7 +3413,7 @@ async def forward_media(
         except Exception as e:
             logging.error(f"❌ Error duplicate check: {e}")
 
-        # ✅ CHECK 2: QUEUE (thread-safe check)
+        # CHECK 2: QUEUE (thread-safe check)
         if queue_deduplicator:
             composite_key = f"{file_id}:{fp_hash}"
             if composite_key in queue_deduplicator._queue_items:
@@ -3389,7 +3423,7 @@ async def forward_media(
                 )
                 return
 
-        # ✅ TAMBAH KE QUEUE dengan dedup
+        # TAMBAH KE QUEUE dengan dedup
         if queue_deduplicator:
             success = await queue_deduplicator.add_to_queue(
                 file_id, fp_hash, (file_id, mtype, fp)
@@ -4180,7 +4214,7 @@ async def cmd_restart(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """✅ Restart command - graceful restart dengan state save"""
+    """Restart command - graceful restart dengan state save"""
     if not is_superadmin(update):
         await update.message.reply_text("❌ Hanya superadmin")
         return
@@ -4322,7 +4356,7 @@ flask_app = Flask(__name__, template_folder='templates')
 
 @flask_app.route('/health', methods=['GET'])
 def health_check():
-    """✅ Health check endpoint dengan proper status dan detailed checks"""
+    """Health check endpoint dengan proper status dan detailed checks"""
     try:
         now = datetime.now(timezone.utc)
         uptime = now - start_time
@@ -4335,7 +4369,7 @@ def health_check():
             "telegram_api": False
         }
         
-        # ✅ Check global state
+        # Check global state
         global_files = 0
         try:
             global_files = len(global_sent_manager._get_all_sent_files())
@@ -4344,7 +4378,7 @@ def health_check():
             logging.error(f"❌ Global state check failed: {e}")
             checks["global_state"] = False
         
-        # ✅ Check filesystem
+        # Check filesystem
         try:
             STATE_DIR.mkdir(parents=True, exist_ok=True)
             GLOBAL_DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -4356,7 +4390,7 @@ def health_check():
             logging.error(f"❌ Filesystem check failed: {e}")
             checks["filesystem"] = False
         
-        # ✅ Check queue
+        # Check queue
         try:
             if pending_queue is not None:
                 queue_size = pending_queue.qsize()
@@ -4367,7 +4401,7 @@ def health_check():
             logging.error(f"❌ Queue check failed: {e}")
             checks["queue"] = False
         
-        # ✅ Check worker task
+        # Check worker task
         try:
             if _worker_task is not None:
                 checks["worker"] = not _worker_task.done()
@@ -4377,10 +4411,10 @@ def health_check():
             logging.error(f"❌ Worker check failed: {e}")
             checks["worker"] = False
         
-        # ✅ Check Telegram API
+        # Check Telegram API
         checks["telegram_api"] = True
         
-        # ✅ Determine overall status
+        # Determine overall status
         passed_checks = sum(1 for v in checks.values() if v)
         total_checks = len(checks)
         
@@ -5029,7 +5063,7 @@ class RobustStateRecovery:
         """Recover dari file yang corrupt"""
         self._log_recovery("🔄 Starting corruption recovery...")
         
-        # ✅ Check queue file
+        # Check queue file
         queue_valid = await self.validate_queue_file()
         if not queue_valid:
             backup = FILE_QUEUE.with_suffix(".json.backup")
@@ -5044,7 +5078,7 @@ class RobustStateRecovery:
                 FILE_QUEUE.unlink(missing_ok=True)
                 self._log_recovery("🗑️ Corrupt queue file deleted")
         
-        # ✅ Check pending file
+        # Check pending file
         pending_valid = await self.validate_pending_file()
         if not pending_valid:
             backup = FILE_PENDING.with_suffix(".json.backup")
@@ -5099,10 +5133,10 @@ async def on_startup(app) -> None:
         loop = asyncio.get_event_loop()
         logging.info(f"✅ Event loop verified: {loop}")
         
-        # ✅ Setup logging PERTAMA
+        # Setup logging PERTAMA
         setup_logging(BOT_NAME)
         
-        # ✅ Print banner
+        # Print banner
         console_mgr = ConsoleOutputManager(Path("logs") / BOT_NAME / f"main.log")
         console_mgr.print_startup_banner(BOT_NAME)
         console_mgr.print_config_summary()
@@ -5116,7 +5150,7 @@ async def on_startup(app) -> None:
         queue_deduplicator = QueueDeduplicator(max_size=10000)
         _shutdown_event = asyncio.Event()
 
-        # ✅ RECOVERY SYSTEM
+        # RECOVERY SYSTEM
         console_mgr.print_status_line("Running recovery system...")
         logging.info(f"🔄 [BOT: {BOT_NAME}] Running recovery system...")
         try:
@@ -5127,7 +5161,7 @@ async def on_startup(app) -> None:
             logging.error(f"❌ [BOT: {BOT_NAME}] Recovery system error: {e}")
             startup_errors.append(("Recovery system", str(e)))
 
-        # ✅ Load GLOBAL sent files
+        # Load GLOBAL sent files
         console_mgr.print_status_line("Loading GLOBAL sent files...")
         logging.info(f"📥 [BOT: {BOT_NAME}] Loading GLOBAL sent files...")
         try:
@@ -5143,7 +5177,7 @@ async def on_startup(app) -> None:
                 logging.error(f"❌ [BOT: {BOT_NAME}] Gagal init new sent file: {e2}")
                 startup_errors.append(("Init sent file", str(e2)))
         
-        # ✅ Load persistent queue
+        # Load persistent queue
         console_mgr.print_status_line("Loading persistent queue...")
         logging.info(f"📥 [BOT: {BOT_NAME}] Loading persistent queue...")
         try:
@@ -5165,7 +5199,7 @@ async def on_startup(app) -> None:
                 logging.error(f"❌ [BOT: {BOT_NAME}] Queue backup recovery failed: {e2}")
             queue_loaded = 0
 
-        # ✅ Load LOCAL state
+        # Load LOCAL state
         console_mgr.print_status_line("Loading LOCAL state...")
         logging.info(f"📥 [BOT: {BOT_NAME}] Loading LOCAL state...")
         try:
@@ -5193,7 +5227,7 @@ async def on_startup(app) -> None:
             logging.error(f"❌ [BOT: {BOT_NAME}] Gagal clear deduplicator: {e}")
             startup_errors.append(("Clear deduplicator", str(e)))
 
-        # ✅ Start queue worker
+        # Start queue worker
         try:
             _worker_task = asyncio.create_task(queue_worker(app.bot))
             console_mgr.print_status_line(f"Queue worker started!")
@@ -5202,7 +5236,7 @@ async def on_startup(app) -> None:
             logging.error(f"❌ [BOT: {BOT_NAME}] Gagal start worker: {e}")
             startup_errors.append(("Worker start", str(e)))
         
-        # ✅ Start admin command processor
+        # Start admin command processor
         try:
             _admin_processor_task = asyncio.create_task(admin_command_processor())
             console_mgr.print_status_line(f"Admin command processor started!")
@@ -5211,13 +5245,13 @@ async def on_startup(app) -> None:
             logging.error(f"❌ [BOT: {BOT_NAME}] Gagal start admin processor: {e}")
             startup_errors.append(("Admin processor", str(e)))
         
-        # ✅ Print startup logs
+        # Print startup logs
         console_mgr.print_startup_logs()
         
-        # ✅ Print ready message
+        # Print ready message
         console_mgr.print_ready()
         
-        # ✅ Report startup errors
+        # Report startup errors
         if startup_errors:
             logging.warning(
                 f"⚠️ [BOT: {BOT_NAME}] Startup completed with {len(startup_errors)} error(s):"
@@ -5240,7 +5274,7 @@ async def on_startup(app) -> None:
 
 
 async def on_shutdown(app) -> None:
-    """✅ Shutdown handler dengan robust state persistence dan task cleanup"""
+    """Shutdown handler dengan robust state persistence dan task cleanup"""
     global _worker_task, _admin_processor_task, _shutdown_event, _tracked_tasks
 
     print("\n" + "="*70)
@@ -5249,15 +5283,15 @@ async def on_shutdown(app) -> None:
 
     logging.info(f"🛑 [BOT: {BOT_NAME}] Shutdown dimulai...")
 
-    # ✅ Set shutdown event PERTAMA
+    # Set shutdown event PERTAMA
     if _shutdown_event:
         _shutdown_event.set()
         logging.info(f"🛑 [BOT: {BOT_NAME}] Shutdown event set")
 
-    # ✅ Beri waktu task yang listen ke _shutdown_event untuk exit sendiri
+    # Beri waktu task yang listen ke _shutdown_event untuk exit sendiri
     await asyncio.sleep(0.5)
 
-    # ✅ Cancel semua tracked tasks (delayed_shutdown, dll)
+    # Cancel semua tracked tasks (delayed_shutdown, dll)
     if _tracked_tasks:
         active = [t for t in _tracked_tasks if not t.done()]
         if active:
@@ -5285,7 +5319,7 @@ async def on_shutdown(app) -> None:
 
         _tracked_tasks.clear()
 
-    # ✅ Cancel admin processor task
+    # Cancel admin processor task
     if _admin_processor_task and not _admin_processor_task.done():
         print("\n⏹️  Membatalkan admin command processor...")
         logging.info(
@@ -5314,7 +5348,7 @@ async def on_shutdown(app) -> None:
             print(f"   ❌ Error cancel admin processor: {e}")
             logging.error(f"❌ Error cancel admin processor: {e}")
 
-    # ✅ Cancel worker task
+    # Cancel worker task
     if _worker_task and not _worker_task.done():
         print("\n⏹️  Membatalkan queue worker...")
         logging.info(
@@ -5343,7 +5377,7 @@ async def on_shutdown(app) -> None:
             print(f"   ❌ Error cancel worker: {e}")
             logging.error(f"❌ Error cancel worker: {e}")
 
-    # ✅ SAVE QUEUE dengan multiple retries
+    # SAVE QUEUE dengan multiple retries
     print("\n💾 Saving queue...")
     logging.info(f"💾 [BOT: {BOT_NAME}] Saving queue...")
     queue_saved = False
@@ -5370,7 +5404,7 @@ async def on_shutdown(app) -> None:
             f"❌ [BOT: {BOT_NAME}] Queue save failed after 5 attempts"
         )
 
-    # ✅ Final save semua state
+    # save semua state
     print("\n💾 Final save semua data...")
     logging.info(f"💾 [BOT: {BOT_NAME}] Final save semua data...")
     pending_snapshot = get_queue_snapshot(pending_queue) if pending_queue else []
@@ -5423,7 +5457,7 @@ async def on_shutdown(app) -> None:
 # === SIGNAL HANDLER ===
 # ============================================================
 def handle_shutdown(signum, frame):
-    """✅ Handle shutdown signal dengan timeout"""
+    """Handle shutdown signal dengan timeout"""
     logging.info(
         f"⚠️ [BOT: {BOT_NAME}] Shutdown signal diterima ({signum}), "
         f"graceful shutdown dalam 30 detik..."
