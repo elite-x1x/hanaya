@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-HANAYA Bot v5.7 - Multi Bot Loader
+HANAYA Bot v5.9 - Multi Bot Loader
 Script untuk menjalankan multiple bots Telegram dengan loader otomatis
 """
 
@@ -94,8 +94,6 @@ class BotProcess:
             'ALLOWED_SOURCE_CHATS': self.config.allowed_chats,
             'PYTHONUNBUFFERED': '1',
         })
-        # ✅ GLOBAL settings diambil dari environment (tidak di-override)
-        # Semua bot akan menggunakan ALLOWED_MEDIA_TYPES, DAILY_LIMIT, dll dari .env
         return env
     
     def start(self) -> bool:
@@ -103,15 +101,13 @@ class BotProcess:
         try:
             print(Colors.info(f"Starting {self.config.name} on port {self.config.flask_port}..."))
             
-            # ✅ Redirect stdout dan stderr ke DEVNULL
-            # Semua logging ditangani oleh bot.py sendiri ke file
             self.process = subprocess.Popen(
                 [sys.executable, 'bot.py'],
                 env=self.get_env(),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
-                preexec_fn=os.setsid if hasattr(os, 'setsid') else None  # Unix only
+                preexec_fn=os.setsid if hasattr(os, 'setsid') else None
             )
             
             self.start_time = datetime.now()
@@ -121,10 +117,10 @@ class BotProcess:
             
             print(Colors.success(f"{self.config.name} started (PID: {self.process.pid})"))
             print(Colors.info(f"Logs:"))
-            print(f"   ├─ Main   : logs/{self.config.name}_main.log")
-            print(f"   ├─ Network: logs/{self.config.name}_network.log")
-            print(f"   ├─ Debug  : logs/{self.config.name}_debug.log")
-            print(f"   └─ Reload : logs/{self.config.name}_reload.log\n")
+            print(f"   ├─ Main   : logs/{self.config.name}/main.log")
+            print(f"   ├─ Network: logs/{self.config.name}/network.log")
+            print(f"   ├─ Debug  : logs/{self.config.name}/debug.log")
+            print(f"   └─ Reload : logs/{self.config.name}/reload.log\n")
             
             return True
             
@@ -145,16 +141,12 @@ class BotProcess:
         try:
             print(Colors.warning(f"Stopping {self.config.name} (PID: {self.process.pid})..."))
             
-            # Coba terminate dulu (graceful)
             try:
                 if hasattr(os, 'killpg'):
-                    # Unix: kill process group
                     os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
                 else:
-                    # Windows
                     self.process.terminate()
                 
-                # Tunggu hingga timeout
                 self.process.wait(timeout=timeout)
                 print(Colors.success(f"{self.config.name} gracefully stopped"))
                 
@@ -191,8 +183,6 @@ class BotProcess:
                     daily_limit = data.get('daily_limit', 0)
                     
                     self.health_status = status
-                    
-                    # Return detailed info
                     info = f"{status} (Q:{queue_size} D:{daily_count}/{daily_limit})"
                     return True, info
                 except Exception:
@@ -268,19 +258,17 @@ class BotLoader:
     def discover_available_bots(self) -> List[int]:
         """Temukan semua bot yang dikonfigurasi"""
         available = []
-        for i in range(1, 100):  # Check hingga 100 bots
+        for i in range(1, 100):
             config = BotConfig(i)
             if config.is_valid():
                 available.append(i)
             else:
-                # Jika bot i tidak valid, stop checking
                 if i > 1:
                     break
         return available
     
     def setup_bots(self) -> bool:
         """Setup konfigurasi bots yang dipilih"""
-        # Jika bot_numbers tidak ditentukan, gunakan semua yang tersedia
         if self.bot_numbers is None:
             self.bot_numbers = self.discover_available_bots()
         
@@ -292,7 +280,6 @@ class BotLoader:
         print(Colors.info(f"Setting up {len(self.bot_numbers)} bot(s)"))
         print("="*70 + "\n")
         
-        # ✅ Display GLOBAL settings
         print(Colors.BOLD + "🌍 GLOBAL CONFIGURATION:" + Colors.RESET)
         print(f"   ├─ Media Types      : {os.getenv('ALLOWED_MEDIA_TYPES', 'video,photo,document')}")
         print(f"   ├─ Daily Limit      : {os.getenv('DAILY_LIMIT', '3500')} media/hari")
@@ -342,7 +329,7 @@ class BotLoader:
         for bot in self.bots:
             if bot.start():
                 started += 1
-            time.sleep(2)  # Delay antar bot startup
+            time.sleep(2)
         
         self.running = True
         
@@ -355,7 +342,7 @@ class BotLoader:
     def display_dashboard(self):
         """Tampilkan dashboard info bots"""
         print("\n" + "="*70)
-        print(Colors.BOLD + "🌸 HANAYA BOT v5.7 - Status Dashboard" + Colors.RESET)
+        print(Colors.BOLD + "🌸 HANAYA BOT v5.9 - Status Dashboard" + Colors.RESET)
         print("="*70 + "\n")
         
         for i, bot in enumerate(self.bots, 1):
@@ -377,7 +364,7 @@ class BotLoader:
             print(f"   ├─ PID         : {bot.process.pid if bot.process else 'N/A'}")
             print(f"   ├─ Health      : {bot.health_status}")
             print(f"   ├─ Restarts    : {bot.restart_count}")
-            print(f"   └─ Log dir     : logs/")
+            print(f"   └─ Log dir     : logs/{bot.config.name}")
             print()
         
         print("="*70)
@@ -392,10 +379,10 @@ class BotLoader:
         print("\n📁 Log Files:")
         for bot in self.bots:
             print(f"   • Bot {bot.config.bot_num} ({bot.config.name}):")
-            print(f"      - Main   : logs/{bot.config.name}_main.log")
-            print(f"      - Network: logs/{bot.config.name}_network.log")
-            print(f"      - Debug  : logs/{bot.config.name}_debug.log")
-            print(f"      - Reload : logs/{bot.config.name}_reload.log")
+            print(f"      - Main   : logs/{bot.config.name}/main.log")
+            print(f"      - Network: logs/{bot.config.name}/network.log")
+            print(f"      - Debug  : logs/{bot.config.name}/debug.log")
+            print(f"      - Reload : logs/{bot.config.name}/reload.log")
         
         print("\n💡 Commands:")
         print("   • Press Ctrl+C to stop all bots")
@@ -487,7 +474,7 @@ class BotLoader:
         # Stop bots dalam urutan reverse (LIFO)
         for bot in reversed(self.bots):
             bot.stop(timeout=10)
-            time.sleep(1)
+            time.sleep(2)
         
         print("="*70)
         print(Colors.success("All bots stopped"))
@@ -499,7 +486,7 @@ class BotLoader:
             # Display banner
             print("\n")
             print(Colors.BOLD + "╔" + "═"*68 + "╗" + Colors.RESET)
-            print(Colors.BOLD + "║" + Colors.MAGENTA + "  🌸 HANAYA BOT v5.7 - Multi Bot Loader" + Colors.RESET + Colors.BOLD + " ║" + Colors.RESET)
+            print(Colors.BOLD + "║" + Colors.MAGENTA + "  🌸 HANAYA BOT v5.9 - Multi Bot Loader" + Colors.RESET + Colors.BOLD + " ║" + Colors.RESET)
             print(Colors.BOLD + "╚" + "═"*68 + "╝" + Colors.RESET)
             print()
             
