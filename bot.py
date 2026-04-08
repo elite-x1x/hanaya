@@ -2863,7 +2863,6 @@ async def admin_command_processor() -> None:
                 elif cmd_type == "pause_worker":
                     try:
                         async with sending_lock:
-                            # ✅ Sekarang sudah OK karena global sudah di-declare
                             is_paused = True
                         logging.info(f"⏸️ [ADMIN] Worker paused")
                     except Exception as e:
@@ -2873,7 +2872,6 @@ async def admin_command_processor() -> None:
                 elif cmd_type == "resume_worker":
                     try:
                         async with sending_lock:
-                            # ✅ Sekarang sudah OK karena global sudah di-declare
                             is_paused = False
                         logging.info(f"▶️ [ADMIN] Worker resumed")
                     except Exception as e:
