@@ -1,6 +1,10 @@
 # ============================================================
-# === IMPORTS ===
+# HANAYA BOT v5.9 - ULTRA STABLE - FULL FIXED VERSION
 # ============================================================
+# Production-ready dengan semua perbaikan
+# Last Updated: 2026-04-10
+# ============================================================
+
 import logging
 import json
 import os
@@ -25,9 +29,7 @@ from flask import Flask, jsonify, request, render_template
 from flood_notification_system import (
     FloodEventLogger,
     AdminFloodNotifier,
-    SmartFloodControllerWithNotifications
 )
-
 
 from telegram import Update, InputMediaVideo, InputMediaPhoto, InputMediaDocument
 from telegram.ext import (
@@ -36,36 +38,23 @@ from telegram.ext import (
 )
 from dotenv import load_dotenv
 
-# ============================================================
-# === PLATFORM-SPECIFIC IMPORTS ===
-# ============================================================
 if platform.system() != "Windows":
     import fcntl
     HAS_FCNTL = True
 else:
     HAS_FCNTL = False
 
-# ============================================================
-# === LOAD ENV ===
-# ============================================================
 _env_file = os.getenv("ENV_FILE", ".env")
 load_dotenv(_env_file)
 
-# ============================================================
-# === KONFIGURASI UTAMA ===
-# ============================================================
 BOT_TOKEN      = os.getenv("BOT_TOKEN", "")
 TARGET_CHAT_ID = int(os.getenv("TARGET_CHAT_ID", 0))
 ADMIN_CHAT_ID  = int(os.getenv("ADMIN_CHAT_ID", 0))
 BOT_NAME       = os.getenv("BOT_NAME", "")
 FLASK_PORT     = int(os.getenv("FLASK_PORT", 5000))
 
-# ============================================================
-# === LOGGING CONFIGURATION (GLOBAL) ===
-# ============================================================
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
-# Multi-target support
 TARGET_CHAT_IDS: List[int] = []
 for _i in range(1, 6):
     _val = os.getenv(f"TARGET_CHAT_ID_{_i}")
@@ -80,9 +69,6 @@ if not BOT_TOKEN:
 if TARGET_CHAT_ID == 0 and not TARGET_CHAT_IDS:
     raise ValueError("❌ TARGET_CHAT_ID tidak diatur di .env")
 
-# ============================================================
-# === ADMIN CONFIG ===
-# ============================================================
 def _parse_id_list(env_key: str) -> List[int]:
     raw = os.getenv(env_key, "")
     result = []
@@ -103,33 +89,20 @@ for _uid in _parse_id_list("MODERATORS"):
 
 ALLOWED_SOURCE_CHATS = _parse_id_list("ALLOWED_SOURCE_CHATS")
 
-# ============================================================
-# === MEDIA TYPE CONFIGURATION (GLOBAL) ===
-# ============================================================
 def _parse_media_types(env_key: str) -> set:
-    """Parse media types dari ENV dengan validasi ketat"""
     raw = os.getenv(env_key, "").lower().strip()
-    
     ALL_TYPES = {
         "video", "photo", "document", "audio",
         "animation", "voice", "video_note", "sticker"
     }
-    
     if not raw:
-        default = {"video", "photo", "document"}
-        return default
-    
+        return {"video", "photo", "document"}
     allowed_types = set()
     for media_type in raw.split(","):
         media_type = media_type.strip().lower()
         if media_type in ALL_TYPES:
             allowed_types.add(media_type)
-    
-    if not allowed_types:
-        default = {"video", "photo", "document"}
-        return default
-    
-    return allowed_types
+    return allowed_types if allowed_types else {"video", "photo", "document"}
 
 ALLOWED_MEDIA_TYPES = _parse_media_types("ALLOWED_MEDIA_TYPES")
 
@@ -144,9 +117,6 @@ MEDIA_TYPE_DISPLAY = {
     "sticker": "🎨 Sticker (WebP, WEBM)",
 }
 
-# ============================================================
-# === RATE LIMIT SETTINGS (GLOBAL) ===
-# ============================================================
 DELAY_BETWEEN_SEND      = float(os.getenv("DELAY_BETWEEN_SEND", "0.5"))
 DELAY_RANDOM_MIN        = float(os.getenv("DELAY_RANDOM_MIN", "0.1"))
 DELAY_RANDOM_MAX        = float(os.getenv("DELAY_RANDOM_MAX", "0.9"))
@@ -160,28 +130,20 @@ DAILY_LIMIT             = int(os.getenv("DAILY_LIMIT", "10000"))
 MAX_RETRIES             = int(os.getenv("MAX_RETRIES", "2"))
 MAX_QUEUE_SIZE          = int(os.getenv("MAX_QUEUE_SIZE", "2500"))
 AUTO_SAVE_INTERVAL      = int(os.getenv("AUTO_SAVE_INTERVAL", "60"))
-
 TIMEOUT                 = int(os.getenv("TIMEOUT", "30"))
 RETRY_ATTEMPTS          = int(os.getenv("RETRY_ATTEMPTS", "3"))
 
 if not (100 <= MAX_QUEUE_SIZE <= 10000):
     raise ValueError("MAX_QUEUE_SIZE harus antara 100-10000")
 
-# ============================================================
-# === SMART FLOOD CONTROL SETTINGS ===
-# ============================================================
 FLOOD_RANDOM_MIN   = 10
 FLOOD_RANDOM_MAX   = 30
 FLOOD_PENALTY_STEP = 15
 FLOOD_MAX_PENALTY  = 300
 FLOOD_RESET_AFTER  = 600
 
-# ============================================================
-# === DIREKTORI DATA ===
-# ============================================================
 GLOBAL_DATA_DIR = Path("data/global")
 GLOBAL_SENT_DIR = GLOBAL_DATA_DIR / "sent"
-
 LOCAL_DATA_DIR  = Path(f"data/{BOT_NAME}")
 STATE_DIR       = LOCAL_DATA_DIR / "state"
 
@@ -190,9 +152,6 @@ GLOBAL_SENT_DIR.mkdir(parents=True, exist_ok=True)
 LOCAL_DATA_DIR.mkdir(parents=True, exist_ok=True)
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 
-# ============================================================
-# === FILE PATH ===
-# ============================================================
 SENT_FILE_PREFIX  = "sent"
 SENT_FILE_EXT     = ".json"
 MAX_SENT_PER_FILE = 2000
@@ -203,24 +162,236 @@ FILE_DAILY     = STATE_DIR / "daily.json"
 FILE_FLOOD     = STATE_DIR / "flood.json"
 FILE_CONFIG    = STATE_DIR / "config.json"
 FILE_RATELIMIT = STATE_DIR / "ratelimit.json"
+FLOOD_LOG_FILE = STATE_DIR / "flood_events.json"
+
+# ============================================================
+# === LOGGING SETUP ===
+# ============================================================
+class CompactFormatter(logging.Formatter):
+    COLORS = {
+        'DEBUG':    '\033[36m',
+        'INFO':     '\033[32m',
+        'WARNING':  '\033[33m',
+        'ERROR':    '\033[31m',
+        'CRITICAL': '\033[35m',
+        'RESET':    '\033[0m'
+    }
+
+    def format(self, record):
+        timestamp = datetime.fromtimestamp(record.created).strftime("%Y-%m-%d %H:%M:%S")
+        level   = record.levelname
+        message = record.getMessage()
+        color   = self.COLORS.get(level, '')
+        reset   = self.COLORS['RESET']
+
+        if record.exc_info:
+            try:
+                exc_type, exc_value, exc_tb = record.exc_info
+                if exc_type and hasattr(exc_type, '__name__'):
+                    exc_name = exc_type.__name__
+                    exc_msg = str(exc_value)[:150] if exc_value else "Unknown"
+                    if record.levelno >= logging.ERROR:
+                        return (
+                            f"{timestamp} [{color}{level}{reset}] {message}\n"
+                            f"    └─ {exc_name}: {exc_msg}"
+                        )
+            except Exception as e:
+                logging.debug(f"⚠️ Error formatting exc_info: {e}")
+
+        return f"{timestamp} [{color}{level}{reset}] {message}"
+
+
+class NetworkErrorFilter(logging.Filter):
+    def __init__(self, max_same_errors: int = 3, cache_ttl: int = 3600):
+        super().__init__()
+        self.error_cache: Dict[str, Tuple[int, float]] = {}
+        self.max_same_errors: int = max_same_errors
+        self.cache_ttl: int = cache_ttl
+        self.last_cleanup: float = time.time()
+        self._lock = threading.Lock()
+
+    def _cleanup_cache(self) -> None:
+        now = time.time()
+        if now - self.last_cleanup < 300:
+            return
+        with self._lock:
+            expired = [
+                k for k, (_, last_time) in self.error_cache.items()
+                if now - last_time > self.cache_ttl
+            ]
+            for k in expired:
+                del self.error_cache[k]
+            if expired:
+                logging.debug(f"🧹 NetworkErrorFilter cache cleaned: {len(expired)} entries")
+            self.last_cleanup = now
+
+    def filter(self, record):
+        self._cleanup_cache()
+        if record.levelno >= logging.ERROR:
+            exc_info = record.exc_info
+            if exc_info and isinstance(exc_info, tuple) and len(exc_info) >= 1:
+                exc_type = exc_info[0]
+                exc_name = (
+                    exc_type.__name__ 
+                    if exc_type and hasattr(exc_type, '__name__') 
+                    else "Unknown"
+                )
+                with self._lock:
+                    if exc_name in self.error_cache:
+                        count, last_time = self.error_cache[exc_name]
+                        now = time.time()
+                        if now - last_time > 60:
+                            self.error_cache[exc_name] = (1, now)
+                        else:
+                            self.error_cache[exc_name] = (count + 1, now)
+                            if count >= self.max_same_errors:
+                                return False
+                    else:
+                        self.error_cache[exc_name] = (1, time.time())
+        return True
+
+
+class LogFilter(logging.Filter):
+    def __init__(self, filter_type: str = "main"):
+        super().__init__()
+        self.filter_type = filter_type
+
+    def filter(self, record):
+        message = record.getMessage()
+        level = record.levelname
+        logger_name = record.name
+        
+        is_network = (
+            "api.telegram.org" in message or
+            "GET " in message or "POST " in message or
+            "HTTP/" in message or
+            "127.0.0.1" in message or
+            "connection" in message.lower() or
+            "timeout" in message.lower() or
+            "network" in message.lower() or
+            "socket" in message.lower() or
+            "ssl" in message.lower() or
+            "certificate" in message.lower() or
+            logger_name.startswith("httpx") or
+            logger_name.startswith("httpcore") or
+            logger_name.startswith("urllib3")
+        )
+        
+        is_reload = (
+            "Cache reloaded" in message or 
+            "[GLOBAL]" in message or
+            "[RELOAD]" in message or
+            "cleanup" in message.lower() or
+            "file lama dihapus" in message
+        )
+        
+        is_debug = (
+            level == "DEBUG" or
+            "send_request" in message or
+            "receive_response" in message or
+            "task" in message.lower() or
+            "coroutine" in message.lower()
+        )
+        
+        if self.filter_type == "main":
+            return not (is_network or is_reload or is_debug)
+        elif self.filter_type == "network":
+            return is_network
+        elif self.filter_type == "reload":
+            return is_reload
+        elif self.filter_type == "debug":
+            return is_debug and not is_network and not is_reload
+        elif self.filter_type == "all":
+            return True
+        
+        return True
+
+
+def setup_logging(bot_name: str):
+    log_dir = Path("logs") / BOT_NAME
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    formatter = CompactFormatter()
+    
+    main_log_file = log_dir / f"main.log"
+    main_handler = RotatingFileHandler(
+        main_log_file,
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8"
+    )
+    main_handler.setFormatter(formatter)
+    main_handler.addFilter(LogFilter(filter_type="main"))
+    main_handler.addFilter(NetworkErrorFilter(max_same_errors=3))
+    
+    network_log_file = log_dir / f"network.log"
+    network_handler = RotatingFileHandler(
+        network_log_file,
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8"
+    )
+    network_handler.setFormatter(formatter)
+    network_handler.addFilter(LogFilter(filter_type="network"))
+    
+    debug_log_file = log_dir / f"debug.log"
+    debug_handler = RotatingFileHandler(
+        debug_log_file,
+        maxBytes=5 * 1024 * 1024,
+        backupCount=2,
+        encoding="utf-8"
+    )
+    debug_handler.setFormatter(formatter)
+    debug_handler.addFilter(LogFilter(filter_type="debug"))
+    
+    reload_log_file = log_dir / f"reload.log"
+    reload_handler = RotatingFileHandler(
+        reload_log_file,
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8"
+    )
+    reload_handler.setFormatter(formatter)
+    reload_handler.addFilter(LogFilter(filter_type="reload"))
+    
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    console_handler.addFilter(NetworkErrorFilter(max_same_errors=3))
+    console_handler.setLevel(logging.WARNING)
+    
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+    
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+    
+    root_logger.addHandler(main_handler)
+    root_logger.addHandler(network_handler)
+    root_logger.addHandler(debug_handler)
+    root_logger.addHandler(reload_handler)
+    root_logger.addHandler(console_handler)
+    
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("telegram").setLevel(logging.WARNING)
+    logging.getLogger("telegram.ext").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
+    logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 
 # ============================================================
-# === CLEAN CONSOLE OUTPUT MANAGER ===
+# === CONSOLE OUTPUT MANAGER ===
 # ============================================================
 class ConsoleOutputManager:
-    """Manager untuk output console yang clean dari log file"""
-    
     def __init__(self, log_file: Path, max_lines: int = 50):
         self.log_file = log_file
         self.max_lines = max_lines
     
     def get_latest_logs(self) -> List[str]:
-        """Ambil log terbaru dari file"""
         try:
             if not self.log_file.exists():
                 return []
-            
             with open(self.log_file, "r", encoding="utf-8") as f:
                 lines = f.readlines()
                 return lines[-self.max_lines:] if lines else []
@@ -228,7 +399,6 @@ class ConsoleOutputManager:
             return [f"❌ Error reading log: {e}"]
     
     def print_startup_banner(self, bot_name: str):
-        """Print banner startup yang clean"""
         banner = f"""
 ╔════════════════════════════════════════════════════════════════
 ║                                                               
@@ -256,7 +426,6 @@ class ConsoleOutputManager:
         print(banner)
     
     def print_config_summary(self):
-        """Print summary konfigurasi"""
         allowed_chats_str = (
             f"{TARGET_CHAT_ID}" if TARGET_CHAT_ID != 0 
             else f"{', '.join(map(str, TARGET_CHAT_IDS))}"
@@ -306,7 +475,6 @@ class ConsoleOutputManager:
         print(summary)
     
     def print_startup_logs(self):
-        """Print log startup terbaru"""
         logs = self.get_latest_logs()
         if logs:
             print("\n📋 STARTUP LOGS (Latest 30):\n")
@@ -316,11 +484,9 @@ class ConsoleOutputManager:
             print("─" * 70)
     
     def print_status_line(self, status_msg: str):
-        """Print status line yang clean"""
         print(f"\n✨ {status_msg}")
     
     def print_ready(self):
-        """Print ready message"""
         ready = f"""
 ╔════════════════════════════════════════════════════════════════
 ║                                                                
@@ -365,295 +531,40 @@ class ConsoleOutputManager:
 
 
 # ============================================================
-# === ADVANCED LOGGING SYSTEM ===
+# === GLOBAL STATE (FIXED) ===
 # ============================================================
-class CompactFormatter(logging.Formatter):
-    """Formatter yang compact dengan warna dan error handling"""
-    COLORS = {
-        'DEBUG':    '\033[36m',
-        'INFO':     '\033[32m',
-        'WARNING':  '\033[33m',
-        'ERROR':    '\033[31m',
-        'CRITICAL': '\033[35m',
-        'RESET':    '\033[0m'
-    }
-
-    def format(self, record):
-        """Format log dengan penanganan error yang baik"""
-        timestamp = datetime.fromtimestamp(record.created).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-        level   = record.levelname
-        message = record.getMessage()
-        color   = self.COLORS.get(level, '')
-        reset   = self.COLORS['RESET']
-
-        if record.exc_info:
-            try:
-                exc_type, exc_value, exc_tb = record.exc_info
-                
-                if exc_type and hasattr(exc_type, '__name__'):
-                    exc_name = exc_type.__name__
-                    exc_msg = str(exc_value)[:150] if exc_value else "Unknown"
-                    
-                    if record.levelno >= logging.ERROR:
-                        return (
-                            f"{timestamp} [{color}{level}{reset}] {message}\n"
-                            f"    └─ {exc_name}: {exc_msg}"
-                        )
-            except Exception as e:
-                logging.debug(f"⚠️ Error formatting exc_info: {e}")
-
-        return f"{timestamp} [{color}{level}{reset}] {message}"
-
-
-class NetworkErrorFilter(logging.Filter):
-    """Filter untuk mengurangi spam network errors dengan cleanup"""
-    def __init__(self, max_same_errors: int = 3, cache_ttl: int = 3600):
-        super().__init__()
-        self.error_cache: Dict[str, Tuple[int, float]] = {}
-        self.max_same_errors: int = max_same_errors
-        self.cache_ttl: int = cache_ttl
-        self.last_cleanup: float = time.time()
-        self._lock = threading.Lock()
-
-    def _cleanup_cache(self) -> None:
-        """Bersihkan cache yang sudah lama dengan thread-safety"""
-        now = time.time()
-        
-        if now - self.last_cleanup < 300:
-            return
-        
-        with self._lock:
-            expired = [
-                k for k, (_, last_time) in self.error_cache.items()
-                if now - last_time > self.cache_ttl
-            ]
-            
-            for k in expired:
-                del self.error_cache[k]
-            
-            if expired:
-                logging.debug(
-                    f"🧹 NetworkErrorFilter cache cleaned: {len(expired)} entries"
-                )
-            
-            self.last_cleanup = now
-
-    def filter(self, record):
-        """Filter log berdasarkan error type dengan thread-safety"""
-        self._cleanup_cache()
-        
-        if record.levelno >= logging.ERROR:
-            exc_info = record.exc_info
-            if exc_info and isinstance(exc_info, tuple) and len(exc_info) >= 1:
-                exc_type = exc_info[0]
-                exc_name = (
-                    exc_type.__name__ 
-                    if exc_type and hasattr(exc_type, '__name__') 
-                    else "Unknown"
-                )
-
-                with self._lock:
-                    if exc_name in self.error_cache:
-                        count, last_time = self.error_cache[exc_name]
-                        now = time.time()
-                        if now - last_time > 60:
-                            self.error_cache[exc_name] = (1, now)
-                        else:
-                            self.error_cache[exc_name] = (count + 1, now)
-                            if count >= self.max_same_errors:
-                                return False
-                    else:
-                        self.error_cache[exc_name] = (1, time.time())
-        
-        return True
-
-
-class LogFilter(logging.Filter):
-    """Filter untuk memisahkan log berdasarkan kategori"""
-    
-    def __init__(self, filter_type: str = "main"):
-        super().__init__()
-        self.filter_type = filter_type
-
-    def filter(self, record):
-        """Deteksi dan filter log berdasarkan tipe"""
-        message = record.getMessage()
-        level = record.levelname
-        logger_name = record.name
-        
-        # === DETEKSI KATEGORI ===
-        
-        # 1. NETWORK (prioritas tertinggi)
-        is_network = (
-            "api.telegram.org" in message or
-            "GET " in message or "POST " in message or
-            "HTTP/" in message or
-            "127.0.0.1" in message or
-            "connection" in message.lower() or
-            "timeout" in message.lower() or
-            "network" in message.lower() or
-            "socket" in message.lower() or
-            "ssl" in message.lower() or
-            "certificate" in message.lower() or
-            logger_name.startswith("httpx") or
-            logger_name.startswith("httpcore") or
-            logger_name.startswith("urllib3")
-        )
-        
-        # 2. RELOAD/CACHE
-        is_reload = (
-            "Cache reloaded" in message or 
-            "[GLOBAL]" in message or
-            "[RELOAD]" in message or
-            "cleanup" in message.lower() or
-            "file lama dihapus" in message
-        )
-        
-        # 3. DEBUG (prioritas terendah)
-        is_debug = (
-            level == "DEBUG" or
-            "send_request" in message or
-            "receive_response" in message or
-            "task" in message.lower() or
-            "coroutine" in message.lower()
-        )
-        
-        # === ROUTING ===
-        
-        if self.filter_type == "main":
-            return not (is_network or is_reload or is_debug)
-        elif self.filter_type == "network":
-            return is_network
-        elif self.filter_type == "reload":
-            return is_reload
-        elif self.filter_type == "debug":
-            return is_debug and not is_network and not is_reload
-        elif self.filter_type == "all":
-            return True
-        
-        return True
-
-
-def setup_logging(bot_name: str):
-    """Setup logging dengan file terpisah dan formatter yang konsisten"""
-    
-    log_dir = Path("logs") / BOT_NAME
-    log_dir.mkdir(parents=True, exist_ok=True)
-    
-    formatter = CompactFormatter()
-    
-    # MAIN LOG
-    main_log_file = log_dir / f"main.log"
-    main_handler = RotatingFileHandler(
-        main_log_file,
-        maxBytes=10 * 1024 * 1024,
-        backupCount=5,
-        encoding="utf-8"
-    )
-    main_handler.setFormatter(formatter)
-    main_handler.addFilter(LogFilter(filter_type="main"))
-    main_handler.addFilter(NetworkErrorFilter(max_same_errors=3))
-    
-    # NETWORK LOG
-    network_log_file = log_dir / f"network.log"
-    network_handler = RotatingFileHandler(
-        network_log_file,
-        maxBytes=5 * 1024 * 1024,
-        backupCount=3,
-        encoding="utf-8"
-    )
-    network_handler.setFormatter(formatter)
-    network_handler.addFilter(LogFilter(filter_type="network"))
-    
-    # DEBUG LOG
-    debug_log_file = log_dir / f"debug.log"
-    debug_handler = RotatingFileHandler(
-        debug_log_file,
-        maxBytes=5 * 1024 * 1024,
-        backupCount=2,
-        encoding="utf-8"
-    )
-    debug_handler.setFormatter(formatter)
-    debug_handler.addFilter(LogFilter(filter_type="debug"))
-    
-    # RELOAD LOG
-    reload_log_file = log_dir / f"reload.log"
-    reload_handler = RotatingFileHandler(
-        reload_log_file,
-        maxBytes=5 * 1024 * 1024,
-        backupCount=3,
-        encoding="utf-8"
-    )
-    reload_handler.setFormatter(formatter)
-    reload_handler.addFilter(LogFilter(filter_type="reload"))
-    
-    # CONSOLE HANDLER YANG CLEAN (hanya important messages)
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-    console_handler.addFilter(NetworkErrorFilter(max_same_errors=3))
-    console_handler.setLevel(logging.WARNING)
-    
-    # Setup root logger
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.DEBUG)
-    
-    for handler in root_logger.handlers[:]:
-        root_logger.removeHandler(handler)
-    
-    root_logger.addHandler(main_handler)
-    root_logger.addHandler(network_handler)
-    root_logger.addHandler(debug_handler)
-    root_logger.addHandler(reload_handler)
-    root_logger.addHandler(console_handler)
-    
-    # Library logging levels
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("telegram").setLevel(logging.WARNING)
-    logging.getLogger("telegram.ext").setLevel(logging.WARNING)
-    logging.getLogger("urllib3").setLevel(logging.WARNING)
-    logging.getLogger("werkzeug").setLevel(logging.WARNING)
-    logging.getLogger("apscheduler").setLevel(logging.WARNING)
-
-
-# ============================================================
-# === GLOBAL STATE ===
-# ============================================================
-pending_queue:      asyncio.Queue | None = None
+pending_queue: asyncio.Queue | None = None
 admin_command_queue: stdlib_queue.Queue | None = None
-is_sending:         bool                 = False
-daily_count:        int                  = 0
-daily_reset_date:   datetime.date        = datetime.now(timezone.utc).date()
-last_save_time:     datetime             = datetime.now(timezone.utc)
-sending_lock:       asyncio.Lock | None  = None
-config_lock:        asyncio.Lock | None  = None
-ratelimit_lock:     asyncio.Lock | None  = None
-is_paused:          bool                 = False
+is_sending: bool = False
+daily_count: int = 0
+daily_reset_date: datetime.date = datetime.now(timezone.utc).date()
+last_save_time: datetime = datetime.now(timezone.utc)
+sending_lock: asyncio.Lock | None = None
+config_lock: asyncio.Lock | None = None
+ratelimit_lock: asyncio.Lock | None = None
+is_paused: bool = False
 
 _state_lock = threading.Lock()
 _global_state_lock = threading.Lock()
 
-flood_ctrl:         "SmartFloodController | None" = None
-start_time:         datetime             = datetime.now(timezone.utc)
-user_ratelimit:     Dict[int, float]     = {}
-admin_ratelimit:    Dict[int, float]     = {}
-_worker_task:       asyncio.Task | None  = None
-_shutdown_event:    asyncio.Event | None = None
-console_mgr:        ConsoleOutputManager | None = None
+flood_ctrl: "SmartFloodControllerWithNotifications | None" = None
+start_time: datetime = datetime.now(timezone.utc)
+user_ratelimit: Dict[int, float] = {}
+admin_ratelimit: Dict[int, float] = {}
+_worker_task: asyncio.Task | None = None
+_shutdown_event: asyncio.Event | None = None
+console_mgr: ConsoleOutputManager | None = None
 _admin_processor_task: asyncio.Task | None = None
-_tracked_tasks:     Set[asyncio.Task]    = set()
+_tracked_tasks: Set[asyncio.Task] = set()
 
-FLOOD_LOG_FILE = STATE_DIR / "flood_events.json"
 flood_event_logger: FloodEventLogger | None = None
 admin_flood_notifier: AdminFloodNotifier | None = None
+
 
 # ============================================================
 # === HELPER FUNCTIONS ===
 # ============================================================
 def get_queue_snapshot(q: asyncio.Queue) -> list:
-    """Ambil snapshot queue dengan aman"""
     try:
         return list(q._queue)
     except AttributeError:
@@ -675,7 +586,6 @@ def get_queue_snapshot(q: asyncio.Queue) -> list:
 
 
 def _flatten_arg(arg, max_depth: int = 10) -> str | None:
-    """Flatten argument dari command dengan depth limit"""
     depth = 0
     while isinstance(arg, (list, tuple)) and depth < max_depth:
         if len(arg) == 0:
@@ -695,7 +605,6 @@ def _flatten_arg(arg, max_depth: int = 10) -> str | None:
 
 
 def make_hash(fingerprint: dict) -> str:
-    """Buat hash dari fingerprint dengan normalisasi"""
     fp_copy = {
         k: v for k, v in fingerprint.items()
         if k not in ("file_id", "timestamp") and v is not None
@@ -717,7 +626,6 @@ def make_hash(fingerprint: dict) -> str:
 
 
 def parse_retry_after(err: str) -> int:
-    """Parse retry_after dari error message dengan robust handling"""
     err_str = str(err).lower()
     
     patterns = [
@@ -748,8 +656,6 @@ def parse_retry_after(err: str) -> int:
 # === PERSISTENT QUEUE MANAGER ===
 # ============================================================
 class PersistentQueueManager:
-    """Mengelola queue dengan auto-save ke file"""
-    
     def __init__(self, queue_file: Path, auto_save_interval: int = 10):
         self.queue_file = queue_file
         self.auto_save_interval = auto_save_interval
@@ -758,7 +664,6 @@ class PersistentQueueManager:
         self._dirty = False
     
     async def save_queue(self, queue: asyncio.Queue) -> bool:
-        """Simpan queue ke file dengan atomic write dan normalisasi"""
         async with self._save_lock:
             try:
                 snapshot = get_queue_snapshot(queue)
@@ -772,7 +677,6 @@ class PersistentQueueManager:
                     self._dirty = False
                     return True
                 
-                # Normalize semua ke format 3-tuple
                 normalized = []
                 for item in snapshot:
                     try:
@@ -798,7 +702,6 @@ class PersistentQueueManager:
                     self._dirty = False
                     return True
                 
-                # Atomic write: tulis ke temp dulu
                 temp_file = self.queue_file.with_suffix(".json.tmp")
                 
                 with open(temp_file, "w", encoding="utf-8") as f:
@@ -806,7 +709,6 @@ class PersistentQueueManager:
                     f.flush()
                     os.fsync(f.fileno())
                 
-                # Atomic rename
                 if self.queue_file.exists():
                     backup = self.queue_file.with_suffix(".json.backup")
                     try:
@@ -837,7 +739,6 @@ class PersistentQueueManager:
                 return False
 
     async def load_queue(self, queue: asyncio.Queue) -> int:
-        """Load queue dari file dengan recovery dan normalisasi ke 3-tuple"""
         try:
             if not self.queue_file.exists():
                 logging.info(f"📂 [QUEUE] File tidak ada, queue kosong")
@@ -853,14 +754,7 @@ class PersistentQueueManager:
             loaded = 0
             for i, item in enumerate(data):
                 try:
-                    # Validate dan normalize ke 3-tuple
-                    if not isinstance(item, (list, tuple)):
-                        logging.debug(f"⚠️ [QUEUE] Item {i} bukan list/tuple, skip")
-                        continue
-                    
-                    # Helper untuk normalize
                     def normalize_item(raw_item):
-                        """Normalize ke format 3-tuple"""
                         if len(raw_item) == 2:
                             file_id, media_type = raw_item
                             if not isinstance(file_id, str) or not isinstance(media_type, str):
@@ -879,7 +773,6 @@ class PersistentQueueManager:
                         
                         return None
                     
-                    # Normalize dan queue
                     item_to_queue = normalize_item(item)
                     if item_to_queue is None:
                         logging.debug(f"⚠️ [QUEUE] Item {i} normalization failed, skip")
@@ -903,7 +796,6 @@ class PersistentQueueManager:
             
             logging.info(f"📥 [QUEUE] Loaded {loaded}/{len(data)} items")
             
-            # Cleanup backup jika berhasil
             backup = self.queue_file.with_suffix(".json.backup")
             if backup.exists():
                 try:
@@ -916,7 +808,6 @@ class PersistentQueueManager:
         except json.JSONDecodeError as e:
             logging.error(f"❌ [QUEUE] JSON corrupt: {e}")
             
-            # Try recover dari backup
             backup = self.queue_file.with_suffix(".json.backup")
             if backup.exists():
                 try:
@@ -947,7 +838,6 @@ class PersistentQueueManager:
                         except Exception:
                             continue
                     
-                    # Restore dari backup
                     try:
                         self.queue_file.write_bytes(backup.read_bytes())
                     except Exception:
@@ -966,47 +856,41 @@ class PersistentQueueManager:
             return 0
     
     async def should_save(self) -> bool:
-        """Cek apakah perlu save"""
         now = time.time()
         return (now - self._last_save) >= self.auto_save_interval
     
     def mark_dirty(self):
-        """Mark queue sebagai dirty (ada perubahan)"""
         self._dirty = True
 
-# Buat instance
 queue_file = STATE_DIR / "queue.json"
 queue_manager = PersistentQueueManager(queue_file, auto_save_interval=10)
 
 
 # ============================================================
-# === GLOBAL SENT FILE MANAGER (PRODUCTION-READY) ===
+# === GLOBAL SENT FILE MANAGER ===
 # ============================================================
 class GlobalSentFileManager:
-    """Mengelola file duplikat GLOBAL yang dipakai bersama semua bot"""
-
     def __init__(
         self,
-        sent_dir:        Path,
-        prefix:          str,
-        max_per_file:    int,
+        sent_dir: Path,
+        prefix: str,
+        max_per_file: int,
         reload_interval: int = 10,
     ):
-        self.sent_dir        = sent_dir
-        self.prefix          = prefix
-        self.max_per_file    = max_per_file
+        self.sent_dir = sent_dir
+        self.prefix = prefix
+        self.max_per_file = max_per_file
         self.reload_interval = reload_interval
 
-        self._cache:          Set[str]      = set()
-        self._current_file:   Path | None   = None
-        self._current_count:  int           = 0
-        self._async_lock      = asyncio.Lock()
-        self._last_reload:    float         = 0.0
-        self._known_files:    List[Path]    = []
-        self._file_lock       = threading.Lock()
+        self._cache: Set[str] = set()
+        self._current_file: Path | None = None
+        self._current_count: int = 0
+        self._async_lock = asyncio.Lock()
+        self._last_reload: float = 0.0
+        self._known_files: List[Path] = []
+        self._file_lock = threading.Lock()
 
     def _acquire_file_lock(self, fp) -> None:
-        """Kunci file di level OS (antar proses)"""
         if not HAS_FCNTL:
             return
         try:
@@ -1015,7 +899,6 @@ class GlobalSentFileManager:
             logging.warning(f"⚠️ [GLOBAL] Gagal acquire file lock: {e}")
 
     def _release_file_lock(self, fp) -> None:
-        """Lepas kunci file di level OS"""
         if not HAS_FCNTL:
             return
         try:
@@ -1024,7 +907,6 @@ class GlobalSentFileManager:
             logging.warning(f"⚠️ [GLOBAL] Gagal release file lock: {e}")
 
     def _get_all_sent_files(self) -> List[Path]:
-        """Ambil semua file sent, diurutkan dari lama ke baru"""
         try:
             files = sorted(
                 self.sent_dir.glob(f"{self.prefix}_*.json"),
@@ -1036,7 +918,6 @@ class GlobalSentFileManager:
             return []
 
     def _get_next_file_index(self) -> int:
-        """Dapatkan index file berikutnya"""
         files = self._get_all_sent_files()
         if not files:
             return 1
@@ -1047,7 +928,6 @@ class GlobalSentFileManager:
             return len(files) + 1
 
     def _has_new_files(self) -> bool:
-        """Cek apakah ada file baru (dengan cache)"""
         try:
             current_files = self._get_all_sent_files()
             
@@ -1066,7 +946,6 @@ class GlobalSentFileManager:
             return False
 
     def _reload_cache_sync(self, force: bool = False) -> None:
-        """Reload cache dari SEMUA file (SYNCHRONOUS) dengan thread-safety"""
         with self._file_lock:
             try:
                 files = self._get_all_sent_files()
@@ -1111,12 +990,11 @@ class GlobalSentFileManager:
                 logging.error(f"❌ [GLOBAL] Gagal reload cache sync: {e}")
 
     async def _reload_cache_async_safe(self) -> None:
-        """Reload cache secara async-safe menggunakan executor dengan timeout"""
         loop = asyncio.get_event_loop()
         try:
             await asyncio.wait_for(
                 loop.run_in_executor(None, self._reload_cache_sync),
-                timeout=10.0  # Add 10 second timeout
+                timeout=10.0
             )
         except asyncio.TimeoutError:
             logging.warning(
@@ -1126,7 +1004,6 @@ class GlobalSentFileManager:
             logging.error(f"❌ [GLOBAL] Error in async cache reload: {e}")
 
     async def load_all(self) -> None:
-        """Load semua file sent ke cache dengan recovery"""
         self._cache.clear()
         files = self._get_all_sent_files()
 
@@ -1163,7 +1040,6 @@ class GlobalSentFileManager:
                 logging.error(f"❌ [GLOBAL] JSON corrupt {f.name}: {e}")
                 corrupted.append(f)
                 
-                # Try backup
                 backup = f.with_suffix(".json.backup")
                 if backup.exists():
                     try:
@@ -1212,8 +1088,8 @@ class GlobalSentFileManager:
                 self._current_count = 0
 
         self._current_file = last_file
-        self._known_files  = files
-        self._last_reload  = time.time()
+        self._known_files = files
+        self._last_reload = time.time()
 
         if self._current_count >= self.max_per_file:
             await self._init_new_file()
@@ -1224,13 +1100,11 @@ class GlobalSentFileManager:
         )
 
     async def _init_new_file(self) -> None:
-        """Buat file sent baru dengan safety check"""
         idx = self._get_next_file_index()
-        self._current_file  = self.sent_dir / f"{self.prefix}_{idx:04d}.json"
+        self._current_file = self.sent_dir / f"{self.prefix}_{idx:04d}.json"
         self._current_count = 0
 
         try:
-            # Check file sudah ada
             if self._current_file.exists():
                 logging.warning(
                     f"⚠️ [GLOBAL] File sudah ada: {self._current_file.name}, "
@@ -1256,7 +1130,6 @@ class GlobalSentFileManager:
                 if self._current_count < self.max_per_file:
                     return
             
-            # Create new file
             with open(self._current_file, "w", encoding="utf-8") as fp:
                 self._acquire_file_lock(fp)
                 try:
@@ -1271,7 +1144,6 @@ class GlobalSentFileManager:
             logging.error(f"❌ [GLOBAL] Gagal buat file: {e}")
 
     async def add(self, key: str) -> None:
-        """Tambahkan key ke file sent (dengan double-check dan atomic write)"""
         async with self._async_lock:
             if key in self._cache:
                 return
@@ -1318,7 +1190,6 @@ class GlobalSentFileManager:
             except FileNotFoundError:
                 logging.warning(f"⚠️ [GLOBAL] File hilang, buat baru")
                 await self._init_new_file()
-                # Retry sekali
                 try:
                     with open(self._current_file, "r+", encoding="utf-8") as fp:
                         self._acquire_file_lock(fp)
@@ -1344,7 +1215,6 @@ class GlobalSentFileManager:
                 self._cache.add(key)
 
     def check(self, key: str) -> bool:
-        """Cek apakah key sudah ada (thread-safe untuk read)"""
         if key in self._cache:
             return True
 
@@ -1354,7 +1224,6 @@ class GlobalSentFileManager:
 
         if cache_stale or has_new:
             try:
-                # Gunakan timeout untuk avoid hanging
                 import threading
                 reload_thread = threading.Thread(
                     target=self._reload_cache_sync,
@@ -1362,7 +1231,7 @@ class GlobalSentFileManager:
                     name="cache_reload"
                 )
                 reload_thread.start()
-                reload_thread.join(timeout=5.0)  # ← Add 5 second timeout
+                reload_thread.join(timeout=5.0)
                 
                 if reload_thread.is_alive():
                     logging.warning(
@@ -1374,7 +1243,6 @@ class GlobalSentFileManager:
         return key in self._cache
 
     async def cleanup_old_files(self, keep_last_n: int = 15) -> None:
-        """Hapus file lama, simpan N file terbaru"""
         files = self._get_all_sent_files()
         total = len(files)
 
@@ -1382,7 +1250,7 @@ class GlobalSentFileManager:
             return
 
         to_delete = files[:-keep_last_n]
-        deleted   = 0
+        deleted = 0
 
         for f in to_delete:
             if f == self._current_file:
@@ -1401,21 +1269,20 @@ class GlobalSentFileManager:
             )
 
     def get_info(self) -> dict:
-        """Dapatkan info lengkap untuk dashboard/status"""
         files = self._get_all_sent_files()
-        now   = time.time()
+        now = time.time()
         return {
-            "total_entries":    len(self._cache),
-            "total_files":      len(files),
-            "current_file":     self._current_file.name if self._current_file else "N/A",
-            "current_count":    self._current_count,
-            "max_per_file":     self.max_per_file,
-            "last_reload":      datetime.fromtimestamp(
-                                    self._last_reload
-                                ).strftime("%H:%M:%S") if self._last_reload else "N/A",
-            "reload_age":       f"{now - self._last_reload:.0f}s" if self._last_reload else "N/A",
-            "reload_interval":  f"{self.reload_interval}s",
-            "known_files":      len(self._known_files),
+            "total_entries": len(self._cache),
+            "total_files": len(files),
+            "current_file": self._current_file.name if self._current_file else "N/A",
+            "current_count": self._current_count,
+            "max_per_file": self.max_per_file,
+            "last_reload": datetime.fromtimestamp(
+                                self._last_reload
+                            ).strftime("%H:%M:%S") if self._last_reload else "N/A",
+            "reload_age": f"{now - self._last_reload:.0f}s" if self._last_reload else "N/A",
+            "reload_interval": f"{self.reload_interval}s",
+            "known_files": len(self._known_files),
         }
 
 
@@ -1431,15 +1298,11 @@ global_sent_manager = GlobalSentFileManager(
 # === LOCAL STATE MANAGER ===
 # ============================================================
 class LocalStateManager:
-    """Mengelola state lokal (pending, daily, flood) — per bot"""
-
     def __init__(self, state_dir: Path):
         self.state_dir = state_dir
 
     async def save_pending(self, pending: list) -> None:
-        """Simpan pending dengan normalisasi format ke 3-tuple"""
         try:
-            # Normalize semua ke format 3-tuple
             normalized = []
             for item in pending:
                 try:
@@ -1463,7 +1326,6 @@ class LocalStateManager:
             logging.error(f"❌ [LOCAL] Gagal save pending: {e}")
 
     async def load_pending(self) -> list:
-        """Load pending dengan validasi format yang benar"""
         try:
             if not FILE_PENDING.exists():
                 return []
@@ -1475,14 +1337,11 @@ class LocalStateManager:
                     logging.warning(f"⚠️ Pending file bukan list, skip")
                     return []
                 
-                # Validate setiap item dengan format yang benar
                 valid_items = []
                 for i, item in enumerate(data):
                     try:
-                        # Support 2-tuple (old) dan 3-tuple (new)
                         if isinstance(item, (list, tuple)):
                             if len(item) == 2:
-                                # Old format: (file_id, media_type)
                                 file_id, media_type = item
                                 if isinstance(file_id, str) and isinstance(media_type, str):
                                     if file_id and media_type:
@@ -1495,7 +1354,6 @@ class LocalStateManager:
                                     )
                             
                             elif len(item) == 3:
-                                # New format: (file_id, media_type, fp_dict)
                                 file_id, media_type, fp = item
                                 if (isinstance(file_id, str) and 
                                     isinstance(media_type, str) and
@@ -1540,7 +1398,7 @@ class LocalStateManager:
     async def save_daily(self, count: int, reset_date: datetime.date) -> None:
         try:
             data = {
-                "count":      count,
+                "count": count,
                 "reset_date": reset_date.isoformat()
             }
             with open(FILE_DAILY, "w", encoding="utf-8") as fp:
@@ -1553,9 +1411,9 @@ class LocalStateManager:
             if not FILE_DAILY.exists():
                 return 0, datetime.now(timezone.utc).date()
             with open(FILE_DAILY, "r", encoding="utf-8") as fp:
-                data       = json.load(fp)
-                count      = int(data.get("count", 0))
-                date_str   = data.get("reset_date", "")
+                data = json.load(fp)
+                count = int(data.get("count", 0))
+                date_str = data.get("reset_date", "")
                 try:
                     reset_date = datetime.fromisoformat(date_str).date()
                 except (ValueError, TypeError):
@@ -1626,8 +1484,6 @@ state_manager = LocalStateManager(STATE_DIR)
 # === ENHANCED DUPLICATE DETECTION ===
 # ============================================================
 class EnhancedDuplicateChecker:
-    """Sistem anti-duplikat yang lebih aman dengan triple-check"""
-    
     def __init__(self, sent_manager: GlobalSentFileManager):
         self.sent_manager = sent_manager
         self._check_lock = asyncio.Lock()
@@ -1638,15 +1494,12 @@ class EnhancedDuplicateChecker:
         fp_hash: str,
         timeout: float = 10.0
     ) -> bool:
-        """Triple-check untuk duplikat dengan timeout"""
         async with self._check_lock:
-            # CHECK 1: Cache (cepat)
             if self.sent_manager.check(file_id):
                 return True
             if self.sent_manager.check(fp_hash):
                 return True
             
-            # CHECK 2: Force reload dengan timeout
             try:
                 loop = asyncio.get_event_loop()
                 await asyncio.wait_for(
@@ -1672,7 +1525,6 @@ class EnhancedDuplicateChecker:
             if self.sent_manager.check(fp_hash):
                 return True
             
-            # CHECK 3: Direct file check dengan timeout
             try:
                 result = await asyncio.wait_for(
                     self._check_files_directly(file_id, fp_hash),
@@ -1689,7 +1541,6 @@ class EnhancedDuplicateChecker:
                 return False
     
     async def _check_files_directly(self, file_id: str, fp_hash: str) -> bool:
-        """Cek langsung di file tanpa cache"""
         try:
             files = self.sent_manager._get_all_sent_files()
             for f in files:
@@ -1711,7 +1562,6 @@ class EnhancedDuplicateChecker:
             return False
     
     async def mark_sent_safe(self, file_id: str, fp_hash: str) -> bool:
-        """Mark sent dengan verification"""
         max_retries = 5
         for attempt in range(max_retries):
             try:
@@ -1740,11 +1590,9 @@ duplicate_checker: EnhancedDuplicateChecker | None = None
 
 
 # ============================================================
-# === QUEUE DEDUPLICATION (PRODUCTION-READY) ===
+# === QUEUE DEDUPLICATION ===
 # ============================================================
 class QueueDeduplicator:
-    """Mencegah duplikat di dalam queue sendiri dengan TTL"""
-    
     def __init__(self, max_size: int = 10000):
         self._queue_items: Dict[str, Tuple[int, float]] = {}
         self._lock = asyncio.Lock()
@@ -1756,7 +1604,6 @@ class QueueDeduplicator:
         fp_hash: str,
         item: tuple
     ) -> bool:
-        """Tambah item ke queue dengan cek duplikat"""
         async with self._lock:
             composite_key = f"{file_id}:{fp_hash}"
             
@@ -1768,7 +1615,6 @@ class QueueDeduplicator:
                 )
                 return False
             
-            # Cek ukuran maksimum
             if len(self._queue_items) >= self._max_size:
                 logging.warning(
                     f"⚠️ [QUEUE] Deduplicator penuh ({self._max_size}), "
@@ -1793,24 +1639,20 @@ class QueueDeduplicator:
         file_id: str,
         fp_hash: str
     ) -> None:
-        """Hapus item dari tracking saat di-process"""
         async with self._lock:
             composite_key = f"{file_id}:{fp_hash}"
             if composite_key in self._queue_items:
                 del self._queue_items[composite_key]
     
     def get_queue_size(self) -> int:
-        """Dapatkan jumlah unique items di queue"""
         return len(self._queue_items)
     
     async def clear_on_startup(self) -> None:
-        """Clear tracking saat startup"""
         async with self._lock:
             self._queue_items.clear()
             logging.info("🔄 [QUEUE] Deduplicator cleared on startup")
     
     async def cleanup_stale(self, max_age_seconds: int = 3600) -> None:
-        """Bersihkan item yang sudah lama dengan TTL"""
         async with self._lock:
             now = time.time()
             stale = [
@@ -1825,7 +1667,6 @@ class QueueDeduplicator:
                     f"🧹 [QUEUE] Cleaned {len(stale)} stale items from deduplicator"
                 )
             
-            # Jika penuh, cleanup agresif
             if len(self._queue_items) > self._max_size * 0.9:
                 old_size = len(self._queue_items)
                 self._queue_items.clear()
@@ -1837,39 +1678,250 @@ queue_deduplicator: QueueDeduplicator | None = None
 
 
 # ============================================================
-# === DAILY COUNTER (LOCAL) ===
+# === DAILY COUNTER ===
 # ============================================================
 async def check_daily_reset() -> None:
-    """Cek apakah perlu reset counter harian"""
     global daily_count, daily_reset_date
     today = datetime.now(timezone.utc).date()
     if today != daily_reset_date:
         logging.info(
             f"🔄 [LOCAL] Reset harian | Kemarin terkirim: {daily_count}"
         )
-        daily_count      = 0
+        daily_count = 0
         daily_reset_date = today
         await save_daily()
 
 async def save_daily() -> None:
-    """Simpan counter harian ke file lokal"""
     await state_manager.save_daily(daily_count, daily_reset_date)
 
 
 # ============================================================
-# === SMART FLOOD CONTROLLER (LOCAL) ===
+# === SMART FLOOD CONTROLLER WITH NOTIFICATIONS (FIXED) ===
 # ============================================================
-class SmartFloodController:
-    """Flood controller per bot (LOCAL)"""
+class SmartFloodControllerWithNotifications:
+    """Flood controller dengan notification system terintegrasi"""
 
-    def __init__(self):
-        self.flood_count:     int             = 0
-        self.total_flood:     int             = 0
+    def __init__(
+        self,
+        notifier: "AdminFloodNotifier | None" = None,
+        event_logger: "FloodEventLogger | None" = None
+    ):
+        self.flood_count: int = 0
+        self.total_flood: int = 0
         self.last_flood_time: datetime | None = None
-        self.penalty:         float           = 0.0
-        self.is_cooling:      bool            = False
-        self.group_delay_min: float           = float(DELAY_BETWEEN_GROUP_MIN)
-        self.group_delay_max: float           = float(DELAY_BETWEEN_GROUP_MAX)
+        self.penalty: float = 0.0
+        self.is_cooling: bool = False
+        self.group_delay_min: float = float(DELAY_BETWEEN_GROUP_MIN)
+        self.group_delay_max: float = float(DELAY_BETWEEN_GROUP_MAX)
+        
+        self.notifier = notifier
+        self.event_logger = event_logger
+        
+        self.recovery_start_time: datetime | None = None
+        self.recovery_target_penalty: float = 0.0
+
+    def get_recovery_progress(self) -> dict:
+        """Get recovery progress dengan estimation"""
+        if not self.is_cooling or self.recovery_start_time is None:
+            return {
+                "in_recovery": False,
+                "progress_pct": 100.0,
+                "elapsed_time": 0.0,
+                "estimated_remaining": 0.0,
+            }
+        
+        now = datetime.now(timezone.utc)
+        elapsed = (now - self.recovery_start_time).total_seconds()
+        
+        decay_rate = 10.0
+        estimated_total = self.recovery_target_penalty / decay_rate
+        remaining = max(0.0, estimated_total - elapsed)
+        
+        progress_pct = min(
+            100.0,
+            (elapsed / estimated_total * 100) if estimated_total > 0 else 100.0
+        )
+        
+        return {
+            "in_recovery": True,
+            "progress_pct": progress_pct,
+            "elapsed_time": elapsed,
+            "estimated_remaining": remaining,
+        }
+
+    async def record_flood(
+        self,
+        suggested_wait: int,
+        error_msg: str = "",
+        media_count: int = 0,
+        delay_min: int = 0,
+        delay_max: int = 0
+    ) -> float:
+        """Catat flood event dengan notifikasi"""
+        now = datetime.now(timezone.utc)
+
+        if self.last_flood_time is not None:
+            elapsed = (now - self.last_flood_time).total_seconds()
+            if elapsed > FLOOD_RESET_AFTER:
+                logging.info(
+                    f"🔄 [FLOOD] Counter direset "
+                    f"(tidak ada flood selama {elapsed:.0f}s)"
+                )
+                self.flood_count = 0
+                self.penalty = 0.0
+
+        self.flood_count += 1
+        self.total_flood += 1
+        self.last_flood_time = now
+        self.is_cooling = True
+        self.recovery_start_time = now
+        self.recovery_target_penalty = self.penalty
+
+        self.penalty = min(
+            float(FLOOD_MAX_PENALTY),
+            float(self.flood_count * FLOOD_PENALTY_STEP)
+        )
+        self.recovery_target_penalty = self.penalty
+
+        random_add = random.uniform(FLOOD_RANDOM_MIN, FLOOD_RANDOM_MAX)
+        total_wait = float(suggested_wait) + random_add + self.penalty
+
+        self.group_delay_min = min(
+            120.0,
+            (delay_min or DELAY_BETWEEN_GROUP_MIN) + (self.flood_count * 5)
+        )
+        self.group_delay_max = min(
+            180.0,
+            (delay_max or DELAY_BETWEEN_GROUP_MAX) + (self.flood_count * 10)
+        )
+
+        log_msg = (
+            f"🚨 [FLOOD] Event #{self.flood_count} terdeteksi!\n"
+            f"   ├─ Saran Telegram   : {suggested_wait}s\n"
+            f"   ├─ Random tambahan  : {random_add:.1f}s\n"
+            f"   ├─ Penalti kumulatif: {self.penalty:.0f}s\n"
+            f"   ├─ Total tunggu     : {total_wait:.1f}s\n"
+            f"   ├─ Media gagal      : {media_count}\n"
+            f"   └─ Delay group baru : {self.group_delay_min:.0f}s - {self.group_delay_max:.0f}s"
+        )
+        logging.warning(log_msg)
+
+        if self.event_logger:
+            try:
+                await self.event_logger.log_flood_event(
+                    flood_count=self.flood_count,
+                    penalty=self.penalty,
+                    total_wait=total_wait,
+                    error_msg=error_msg[:150],
+                    media_count=media_count,
+                    severity=self._calculate_severity(self.flood_count)
+                )
+            except Exception as e:
+                logging.error(f"❌ Error logging flood event: {e}")
+
+        if self.notifier:
+            try:
+                await self.notifier.notify_flood(
+                    flood_count=self.flood_count,
+                    penalty=self.penalty,
+                    total_wait=total_wait,
+                    error_msg=error_msg,
+                    media_count=media_count
+                )
+            except Exception as e:
+                logging.error(f"❌ Error sending flood notification: {e}")
+
+        await self.save_state()
+        return total_wait
+
+    async def record_success(self) -> None:
+        """Catat pengiriman sukses dengan penalty decay"""
+        if self.penalty > 0:
+            decay_rate = 10.0
+            self.penalty = max(0.0, self.penalty - decay_rate)
+        
+        if self.flood_count > 0:
+            self.flood_count = max(0, self.flood_count - 1)
+            if self.flood_count == 0:
+                self.last_flood_time = None
+                self.penalty = 0.0
+                self.is_cooling = False
+                self.recovery_start_time = None
+                logging.info(f"✅ [FLOOD] Status normal kembali")
+        
+        if self.group_delay_min > DELAY_BETWEEN_GROUP_MIN:
+            self.group_delay_min = max(
+                float(DELAY_BETWEEN_GROUP_MIN),
+                self.group_delay_min - 5.0
+            )
+        if self.group_delay_max > DELAY_BETWEEN_GROUP_MAX:
+            self.group_delay_max = max(
+                float(DELAY_BETWEEN_GROUP_MAX),
+                self.group_delay_max - 8.0
+            )
+        
+        await self.save_state()
+
+    def _calculate_severity(self, flood_count: int) -> str:
+        """Calculate severity level"""
+        if flood_count >= 5:
+            return "critical"
+        elif flood_count >= 3:
+            return "high"
+        else:
+            return "medium"
+
+    def get_group_delay(self) -> float:
+        """Dapatkan delay antar group"""
+        return random.uniform(self.group_delay_min, self.group_delay_max)
+
+    def get_status(self) -> str:
+        """Dapatkan status flood controller"""
+        return (
+            f"FloodCtrl | Count: {self.flood_count} | "
+            f"Total: {self.total_flood} | "
+            f"Penalty: {self.penalty:.0f}s | "
+            f"Cooling: {self.is_cooling}"
+        )
+
+    def to_dict(self) -> dict:
+        """Convert ke dict untuk disimpan"""
+        return {
+            "flood_count": self.flood_count,
+            "total_flood": self.total_flood,
+            "last_flood_time": (
+                self.last_flood_time.isoformat()
+                if self.last_flood_time else None
+            ),
+            "penalty": self.penalty,
+            "is_cooling": self.is_cooling,
+            "group_delay_min": self.group_delay_min,
+            "group_delay_max": self.group_delay_max,
+        }
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: dict,
+        notifier: "AdminFloodNotifier | None" = None,
+        event_logger: "FloodEventLogger | None" = None
+    ) -> "SmartFloodControllerWithNotifications":
+        """Create dari dict"""
+        obj = cls(notifier=notifier, event_logger=event_logger)
+        obj.flood_count = int(data.get("flood_count", 0))
+        obj.total_flood = int(data.get("total_flood", 0))
+        obj.last_flood_time = cls._parse_last_flood_time(
+            data.get("last_flood_time")
+        )
+        obj.penalty = float(data.get("penalty", 0.0))
+        obj.is_cooling = bool(data.get("is_cooling", False))
+        obj.group_delay_min = float(
+            data.get("group_delay_min", DELAY_BETWEEN_GROUP_MIN)
+        )
+        obj.group_delay_max = float(
+            data.get("group_delay_max", DELAY_BETWEEN_GROUP_MAX)
+        )
+        return obj
 
     @staticmethod
     def _parse_last_flood_time(value) -> datetime | None:
@@ -1889,133 +1941,12 @@ class SmartFloodController:
                 return None
         return None
 
-    async def record_flood(self, suggested_wait: int) -> float:
-        """Catat flood event"""
-        now = datetime.now(timezone.utc)
-
-        if self.last_flood_time is not None:
-            elapsed = (now - self.last_flood_time).total_seconds()
-            if elapsed > FLOOD_RESET_AFTER:
-                logging.info(
-                    f"🔄 [LOCAL] Flood counter direset "
-                    f"(tidak ada flood selama {elapsed:.0f}s)"
-                )
-                self.flood_count = 0
-                self.penalty     = 0.0
-
-        self.flood_count     += 1
-        self.total_flood     += 1
-        self.last_flood_time  = now
-        self.is_cooling       = True
-        self.penalty          = min(
-            float(FLOOD_MAX_PENALTY),
-            float(self.flood_count * FLOOD_PENALTY_STEP)
-        )
-
-        random_add = random.uniform(FLOOD_RANDOM_MIN, FLOOD_RANDOM_MAX)
-        total_wait = float(suggested_wait) + random_add + self.penalty
-
-        self.group_delay_min = min(
-            120.0,
-            DELAY_BETWEEN_GROUP_MIN + (self.flood_count * 5)
-        )
-        self.group_delay_max = min(
-            180.0,
-            DELAY_BETWEEN_GROUP_MAX + (self.flood_count * 10)
-        )
-
-        logging.warning(
-            f"🚨 [LOCAL] FLOOD #{self.flood_count} terdeteksi!\n"
-            f"   ├─ Saran Telegram   : {suggested_wait}s\n"
-            f"   ├─ Random tambahan  : {random_add:.1f}s\n"
-            f"   ├─ Penalti kumulatif: {self.penalty:.0f}s\n"
-            f"   ├─ Total tunggu     : {total_wait:.1f}s\n"
-            f"   └─ Delay group baru : {self.group_delay_min:.0f}s - {self.group_delay_max:.0f}s"
-        )
-
-        await self.save_state()
-        return total_wait
-
-    async def record_success(self) -> None:
-        """Catat pengiriman sukses dengan penalty decay"""
-        if self.penalty > 0:
-            decay_rate = 10.0
-            self.penalty = max(0.0, self.penalty - decay_rate)
-        
-        if self.flood_count > 0:
-            self.flood_count = max(0, self.flood_count - 1)
-            if self.flood_count == 0:
-                self.last_flood_time = None
-                self.penalty = 0.0
-                logging.info(f"✅ [LOCAL] Flood status normal kembali")
-        
-        if self.group_delay_min > DELAY_BETWEEN_GROUP_MIN:
-            self.group_delay_min = max(
-                float(DELAY_BETWEEN_GROUP_MIN),
-                self.group_delay_min - 5.0
-            )
-        if self.group_delay_max > DELAY_BETWEEN_GROUP_MAX:
-            self.group_delay_max = max(
-                float(DELAY_BETWEEN_GROUP_MAX),
-                self.group_delay_max - 8.0
-            )
-        
-        self.is_cooling = False
-        await self.save_state()
-
-    def get_group_delay(self) -> float:
-        """Dapatkan delay antar group"""
-        return random.uniform(self.group_delay_min, self.group_delay_max)
-
-    def get_status(self) -> str:
-        """Dapatkan status flood controller"""
-        return (
-            f"FloodCtrl | Count: {self.flood_count} | "
-            f"Total: {self.total_flood} | "
-            f"Penalty: {self.penalty:.0f}s | "
-            f"Cooling: {self.is_cooling}"
-        )
-
-    def to_dict(self) -> dict:
-        """Convert ke dict untuk disimpan"""
-        return {
-            "flood_count":     self.flood_count,
-            "total_flood":     self.total_flood,
-            "last_flood_time": (
-                self.last_flood_time.isoformat()
-                if self.last_flood_time else None
-            ),
-            "penalty":         self.penalty,
-            "is_cooling":      self.is_cooling,
-            "group_delay_min": self.group_delay_min,
-            "group_delay_max": self.group_delay_max,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "SmartFloodController":
-        """Create dari dict"""
-        obj = cls()
-        obj.flood_count     = int(data.get("flood_count", 0))
-        obj.total_flood     = int(data.get("total_flood", 0))
-        obj.last_flood_time = cls._parse_last_flood_time(
-            data.get("last_flood_time")
-        )
-        obj.penalty         = float(data.get("penalty", 0.0))
-        obj.is_cooling      = bool(data.get("is_cooling", False))
-        obj.group_delay_min = float(
-            data.get("group_delay_min", DELAY_BETWEEN_GROUP_MIN)
-        )
-        obj.group_delay_max = float(
-            data.get("group_delay_max", DELAY_BETWEEN_GROUP_MAX)
-        )
-        return obj
-
     async def save_state(self) -> None:
         """Simpan state ke file lokal"""
         try:
             await state_manager.save_flood(self.to_dict())
         except Exception as e:
-            logging.error(f"❌ [LOCAL] Gagal save flood state: {e}")
+            logging.error(f"❌ Gagal save flood state: {e}")
 
 
 # ============================================================
@@ -2026,7 +1957,6 @@ async def save_all() -> None:
     global last_save_time
 
     try:
-        # Collect semua data dulu
         pending_snapshot = get_queue_snapshot(pending_queue) if pending_queue else []
         
         daily_data = {
@@ -2051,7 +1981,6 @@ async def save_all() -> None:
         
         ratelimit_data = {str(k): v for k, v in user_ratelimit.items()}
         
-        # Save semua dengan error handling per item
         errors = []
         
         try:
@@ -2084,7 +2013,6 @@ async def save_all() -> None:
             logging.error(f"❌ [LOCAL] Gagal save ratelimit: {e}")
             errors.append(("ratelimit", e))
         
-        # Report hasil
         if errors:
             failed = [name for name, _ in errors]
             logging.warning(
@@ -2100,15 +2028,13 @@ async def save_all() -> None:
 
 
 async def load_local_state() -> None:
-    """Load LOCAL state SAJA dengan proper locking - NO DUPLICATE PENDING"""
+    """Load LOCAL state SAJA dengan proper locking - FIXED"""
     global daily_count, daily_reset_date, DAILY_LIMIT, \
            DELAY_BETWEEN_SEND, DELAY_RANDOM_MIN, DELAY_RANDOM_MAX, \
            GROUP_SIZE, DELAY_BETWEEN_GROUP_MIN, DELAY_BETWEEN_GROUP_MAX, \
            BATCH_PAUSE_EVERY, BATCH_PAUSE_MIN, BATCH_PAUSE_MAX, \
            flood_ctrl, user_ratelimit
 
-    # SKIP loading pending - sudah di-load oleh queue_manager.load_queue()
-    # Hanya cleanup backup file jika ada
     try:
         backup = FILE_PENDING.with_suffix(".json.backup")
         if backup.exists():
@@ -2120,7 +2046,6 @@ async def load_local_state() -> None:
     except Exception as e:
         logging.warning(f"⚠️ [LOCAL] Error cleanup backup: {e}")
 
-    # Load LOCAL daily with proper locking
     try:
         async with sending_lock:
             loaded_count, loaded_date = await state_manager.load_daily()
@@ -2130,11 +2055,14 @@ async def load_local_state() -> None:
     except Exception as e:
         logging.warning(f"⚠️ [LOCAL] Gagal load daily: {e}")
 
-    # Load LOCAL flood with proper locking
     try:
         flood_data = await state_manager.load_flood()
         if flood_data:
-            new_flood_ctrl = SmartFloodController.from_dict(flood_data)
+            new_flood_ctrl = SmartFloodControllerWithNotifications.from_dict(
+                flood_data,
+                notifier=admin_flood_notifier,
+                event_logger=flood_event_logger
+            )
             async with sending_lock:
                 flood_ctrl = new_flood_ctrl
             logging.info(
@@ -2143,7 +2071,6 @@ async def load_local_state() -> None:
     except Exception as e:
         logging.warning(f"⚠️ [LOCAL] Gagal load flood ctrl: {e}")
 
-    # Load LOCAL config
     try:
         config = await state_manager.load_config()
         if config:
@@ -2192,7 +2119,6 @@ async def load_local_state() -> None:
     except Exception as e:
         logging.warning(f"⚠️ [LOCAL] Gagal load config: {e}")
     
-    # Load LOCAL ratelimit
     try:
         raw_rl = await state_manager.load_ratelimit()
         user_ratelimit = {int(k): v for k, v in raw_rl.items()}
@@ -2214,119 +2140,111 @@ async def load_local_state() -> None:
 def get_fingerprint(msg) -> dict:
     """Ambil fingerprint dari message dengan support SEMUA media type"""
     fp = {
-        "file_id":    None,
+        "file_id": None,
         "media_type": None,
-        "file_size":  None,
-        "duration":   None,
-        "width":      None,
-        "height":     None,
-        "file_name":  None,
-        "mime_type":  None,
-        "timestamp":  datetime.now(timezone.utc).isoformat(),
+        "file_size": None,
+        "duration": None,
+        "width": None,
+        "height": None,
+        "file_name": None,
+        "mime_type": None,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     
     try:
-        # VIDEO
         if msg.video:
             v = msg.video
             fp.update({
-                "file_id":    v.file_id,
+                "file_id": v.file_id,
                 "media_type": "video",
-                "file_size":  v.file_size,
-                "duration":   v.duration,
-                "width":      v.width,
-                "height":     v.height,
-                "mime_type":  v.mime_type,
+                "file_size": v.file_size,
+                "duration": v.duration,
+                "width": v.width,
+                "height": v.height,
+                "mime_type": v.mime_type,
             })
             return fp
         
-        # DOCUMENT
         if msg.document:
             d = msg.document
             fp.update({
-                "file_id":    d.file_id,
+                "file_id": d.file_id,
                 "media_type": "document",
-                "file_size":  d.file_size,
-                "file_name":  d.file_name,
-                "mime_type":  d.mime_type,
+                "file_size": d.file_size,
+                "file_name": d.file_name,
+                "mime_type": d.mime_type,
             })
             return fp
         
-        # PHOTO
         if msg.photo and len(msg.photo) > 0:
             p = msg.photo[-1]
             fp.update({
-                "file_id":    p.file_id,
+                "file_id": p.file_id,
                 "media_type": "photo",
-                "file_size":  p.file_size,
-                "width":      p.width,
-                "height":     p.height,
+                "file_size": p.file_size,
+                "width": p.width,
+                "height": p.height,
             })
             return fp
         
-        # AUDIO
         if msg.audio:
             a = msg.audio
             fp.update({
-                "file_id":    a.file_id,
+                "file_id": a.file_id,
                 "media_type": "audio",
-                "file_size":  a.file_size,
-                "duration":   a.duration,
-                "file_name":  a.file_name,
-                "mime_type":  a.mime_type,
+                "file_size": a.file_size,
+                "duration": a.duration,
+                "file_name": a.file_name,
+                "mime_type": a.mime_type,
             })
             return fp
         
-        # ANIMATION
         if msg.animation:
             anim = msg.animation
             fp.update({
-                "file_id":    anim.file_id,
+                "file_id": anim.file_id,
                 "media_type": "animation",
-                "file_size":  anim.file_size,
-                "duration":   anim.duration,
-                "width":      anim.width,
-                "height":     anim.height,
-                "file_name":  anim.file_name,
-                "mime_type":  anim.mime_type,
+                "file_size": anim.file_size,
+                "duration": anim.duration,
+                "width": anim.width,
+                "height": anim.height,
+                "file_name": anim.file_name,
+                "mime_type": anim.mime_type,
             })
             return fp
         
-        # VOICE
         if msg.voice:
             v = msg.voice
             fp.update({
-                "file_id":    v.file_id,
+                "file_id": v.file_id,
                 "media_type": "voice",
-                "file_size":  v.file_size,
-                "duration":   v.duration,
-                "mime_type":  v.mime_type,
+                "file_size": v.file_size,
+                "duration": v.duration,
+                "mime_type": v.mime_type,
             })
             return fp
         
-        # VIDEO NOTE
         if msg.video_note:
             vn = msg.video_note
             fp.update({
-                "file_id":    vn.file_id,
+                "file_id": vn.file_id,
                 "media_type": "video_note",
-                "file_size":  vn.file_size,
-                "duration":   vn.duration,
-                "width":      vn.width,
-                "height":     vn.height,
+                "file_size": vn.file_size,
+                "duration": vn.duration,
+                "width": vn.width,
+                "height": vn.height,
             })
             return fp
         
-        # STICKER
         if msg.sticker:
             s = msg.sticker
             fp.update({
-                "file_id":    s.file_id,
+                "file_id": s.file_id,
                 "media_type": "sticker",
-                "file_size":  s.file_size,
-                "width":      s.width,
-                "height":     s.height,
-                "mime_type":  s.mime_type,
+                "file_size": s.file_size,
+                "width": s.width,
+                "height": s.height,
+                "mime_type": s.mime_type,
             })
             return fp
     
@@ -2340,20 +2258,16 @@ def get_fingerprint(msg) -> dict:
 # === ADMIN HELPERS ===
 # ============================================================
 def get_role(update: Update) -> str | None:
-    """Dapatkan role admin"""
     uid = update.effective_user.id if update.effective_user else None
     return ADMINS.get(uid)
 
 def is_superadmin(update: Update) -> bool:
-    """Cek apakah superadmin"""
     return get_role(update) == "superadmin"
 
 def is_moderator(update: Update) -> bool:
-    """Cek apakah moderator atau superadmin"""
     return get_role(update) in ("superadmin", "moderator")
 
 async def rate_limit_check(user_id: int, interval: int = 60) -> bool:
-    """Rate limit per user (forward media) dengan thread-safety"""
     global user_ratelimit
     
     async with ratelimit_lock:
@@ -2368,7 +2282,6 @@ async def rate_limit_check(user_id: int, interval: int = 60) -> bool:
 
 
 async def admin_rate_limit_check(user_id: int, interval: int = 5) -> bool:
-    """Rate limit per admin (admin commands) dengan thread-safety"""
     global admin_ratelimit
     
     async with ratelimit_lock:
@@ -2383,7 +2296,6 @@ async def admin_rate_limit_check(user_id: int, interval: int = 5) -> bool:
 
 
 def get_target_chat_id() -> int:
-    """Pilih target chat (multi-target support) dengan validation"""
     valid_targets = []
     
     if TARGET_CHAT_ID != 0:
@@ -2403,7 +2315,7 @@ def get_target_chat_id() -> int:
 
 
 # ============================================================
-# === SEND MEDIA WITH RETRY (UNIVERSAL - ANTI CRASH - FIXED) ===
+# === SEND MEDIA WITH RETRY (UNIVERSAL - FIXED) ===
 # ============================================================
 async def send_media_with_retry(
     bot,
@@ -2416,7 +2328,6 @@ async def send_media_with_retry(
     if not media_items:
         return False
     
-    # Kelompokkan media berdasarkan tipe
     media_groups = {
         "video": [],
         "photo": [],
@@ -2435,7 +2346,6 @@ async def send_media_with_retry(
     attempt = 0
     partial_success = False
     
-    # Helper function untuk retry dengan backoff
     async def send_with_backoff(send_func, media_type: str, max_attempts: int = 3):
         """Helper untuk send dengan exponential backoff"""
         for attempt in range(max_attempts):
@@ -2447,14 +2357,14 @@ async def send_media_with_retry(
                     f"⏱️ Timeout kirim {media_type} (attempt {attempt+1}/{max_attempts})"
                 )
                 if attempt < max_attempts - 1:
-                    wait_time = 5 * (2 ** attempt)  # 5s, 10s, 20s
+                    wait_time = 5 * (2 ** attempt)
                     await asyncio.sleep(wait_time)
                 else:
                     return False
             except Exception as e:
                 logging.error(f"❌ Error kirim {media_type}: {e}")
                 if attempt < max_attempts - 1:
-                    wait_time = 2 * (2 ** attempt)  # 2s, 4s, 8s
+                    wait_time = 2 * (2 ** attempt)
                     await asyncio.sleep(wait_time)
                 else:
                     return False
@@ -2531,143 +2441,52 @@ async def send_media_with_retry(
                     partial_success = True
                     media_groups["document"] = []
             
-            # 4. KIRIM AUDIO (INDIVIDUAL)
-            if media_groups["audio"]:
-                sent_count = 0
-                for fid in media_groups["audio"]:
-                    try:
-                        success = await send_with_backoff(
-                            lambda fid=fid: bot.send_audio(chat_id=chat_id, audio=fid),
-                            media_type="audio"
-                        )
-                        if success:
-                            sent_count += 1
-                        await asyncio.sleep(0.5)
-                    except Exception as e:
-                        logging.warning(
-                            f"⚠️ Gagal kirim audio {fid[:8]}...: {e}"
-                        )
-                        continue
-                
-                if sent_count > 0:
-                    logging.info(f"✅ Terkirim {sent_count} audio")
-                    partial_success = True
-                    media_groups["audio"] = []
+            # 4-8. KIRIM TIPE LAINNYA
+            for media_type in ["audio", "animation", "voice", "video_note", "sticker"]:
+                if media_groups[media_type]:
+                    sent_count = 0
+                    send_method = {
+                        "audio": "send_audio",
+                        "animation": "send_animation",
+                        "voice": "send_voice",
+                        "video_note": "send_video_note",
+                        "sticker": "send_sticker",
+                    }[media_type]
+                    
+                    for fid in media_groups[media_type]:
+                        try:
+                            method = getattr(bot, send_method)
+                            success = await send_with_backoff(
+                                lambda fid=fid, m=method: m(chat_id=chat_id, **{media_type: fid}),
+                                media_type=media_type
+                            )
+                            if success:
+                                sent_count += 1
+                            await asyncio.sleep(0.5)
+                        except Exception as e:
+                            logging.warning(
+                                f"⚠️ Gagal kirim {media_type} {fid[:8]}...: {e}"
+                            )
+                            continue
+                    
+                    if sent_count > 0:
+                        logging.info(f"✅ Terkirim {sent_count} {media_type}")
+                        partial_success = True
+                        media_groups[media_type] = []
             
-            # 5. KIRIM ANIMATION (INDIVIDUAL)
-            if media_groups["animation"]:
-                sent_count = 0
-                for fid in media_groups["animation"]:
-                    try:
-                        success = await send_with_backoff(
-                            lambda fid=fid: bot.send_animation(chat_id=chat_id, animation=fid),
-                            media_type="animation"
-                        )
-                        if success:
-                            sent_count += 1
-                        await asyncio.sleep(0.5)
-                    except Exception as e:
-                        logging.warning(
-                            f"⚠️ Gagal kirim animation {fid[:8]}...: {e}"
-                        )
-                        continue
-                
-                if sent_count > 0:
-                    logging.info(f"✅ Terkirim {sent_count} animation")
-                    partial_success = True
-                    media_groups["animation"] = []
-            
-            # 6. KIRIM VOICE (INDIVIDUAL)
-            if media_groups["voice"]:
-                sent_count = 0
-                for fid in media_groups["voice"]:
-                    try:
-                        success = await send_with_backoff(
-                            lambda fid=fid: bot.send_voice(chat_id=chat_id, voice=fid),
-                            media_type="voice"
-                        )
-                        if success:
-                            sent_count += 1
-                        await asyncio.sleep(0.5)
-                    except Exception as e:
-                        logging.warning(
-                            f"⚠️ Gagal kirim voice {fid[:8]}...: {e}"
-                        )
-                        continue
-                
-                if sent_count > 0:
-                    logging.info(f"✅ Terkirim {sent_count} voice")
-                    partial_success = True
-                    media_groups["voice"] = []
-            
-            # 7. KIRIM VIDEO NOTE (INDIVIDUAL)
-            if media_groups["video_note"]:
-                sent_count = 0
-                for fid in media_groups["video_note"]:
-                    try:
-                        success = await send_with_backoff(
-                            lambda fid=fid: bot.send_video_note(chat_id=chat_id, video_note=fid),
-                            media_type="video_note"
-                        )
-                        if success:
-                            sent_count += 1
-                        await asyncio.sleep(0.5)
-                    except Exception as e:
-                        logging.warning(
-                            f"⚠️ Gagal kirim video_note {fid[:8]}...: {e}"
-                        )
-                        continue
-                
-                if sent_count > 0:
-                    logging.info(f"✅ Terkirim {sent_count} video_note")
-                    partial_success = True
-                    media_groups["video_note"] = []
-            
-            # 8. KIRIM STICKER (INDIVIDUAL)
-            if media_groups["sticker"]:
-                sent_count = 0
-                for fid in media_groups["sticker"]:
-                    try:
-                        success = await send_with_backoff(
-                            lambda fid=fid: bot.send_sticker(chat_id=chat_id, sticker=fid),
-                            media_type="sticker"
-                        )
-                        if success:
-                            sent_count += 1
-                        await asyncio.sleep(0.5)
-                    except Exception as e:
-                        logging.warning(
-                            f"⚠️ Gagal kirim sticker {fid[:8]}...: {e}"
-                        )
-                        continue
-                
-                if sent_count > 0:
-                    logging.info(f"✅ Terkirim {sent_count} sticker")
-                    partial_success = True
-                    media_groups["sticker"] = []
-            
-            # Jika ada partial success, return True
             if partial_success:
                 return True
             
             return False
 
-        except asyncio.TimeoutError:
-            logging.warning(
-                f"⏱️ Timeout kirim media (attempt {attempt+1}/{max_retries})"
-            )
-            attempt += 1
-            await asyncio.sleep(10)
-
         except Exception as e:
             err = str(e).lower()
 
-            # Flood wait section:
+            # Flood wait section
             if "flood" in err or "too many requests" in err or "retry" in err:
                 try:
                     suggested = parse_retry_after(str(e))
                     
-                    # ✅ NEW: Pass media_count ke record_flood
                     total_wait = await flood_ctrl.record_flood(
                         suggested_wait=suggested,
                         error_msg=str(e)[:150],
@@ -2699,7 +2518,6 @@ async def send_media_with_retry(
                         logging.info(
                             f"🔄 Chat dipindahkan ke {new_id}, update target..."
                         )
-                        # Signal ke caller untuk update chat_id
                         raise ValueError(f"CHAT_MIGRATED:{new_id}")
                     except ValueError:
                         raise
@@ -2743,7 +2561,7 @@ async def send_media_with_retry(
 
 
 # ============================================================
-# === ADMIN COMMAND PROCESSOR (THREAD-SAFE) ===
+# === ADMIN COMMAND PROCESSOR (FIXED) ===
 # ============================================================
 async def admin_command_processor() -> None:
     """Process admin commands dari Flask dengan thread-safe queue"""
@@ -2838,32 +2656,32 @@ async def admin_command_processor() -> None:
                         preset = presets[preset_name]
 
                         async with config_lock:
-                            DELAY_BETWEEN_SEND      = preset["delay"]
-                            DELAY_RANDOM_MIN        = preset["random_min"]
-                            DELAY_RANDOM_MAX        = preset["random_max"]
-                            GROUP_SIZE              = preset["group_size"]
+                            DELAY_BETWEEN_SEND = preset["delay"]
+                            DELAY_RANDOM_MIN = preset["random_min"]
+                            DELAY_RANDOM_MAX = preset["random_max"]
+                            GROUP_SIZE = preset["group_size"]
                             DELAY_BETWEEN_GROUP_MIN = preset["group_delay_min"]
                             DELAY_BETWEEN_GROUP_MAX = preset["group_delay_max"]
-                            BATCH_PAUSE_EVERY       = preset["batch_pause_every"]
-                            BATCH_PAUSE_MIN         = preset["batch_pause_min"]
-                            BATCH_PAUSE_MAX         = preset["batch_pause_max"]
-                            DAILY_LIMIT             = preset["daily_limit"]
+                            BATCH_PAUSE_EVERY = preset["batch_pause_every"]
+                            BATCH_PAUSE_MIN = preset["batch_pause_min"]
+                            BATCH_PAUSE_MAX = preset["batch_pause_max"]
+                            DAILY_LIMIT = preset["daily_limit"]
 
                             if flood_ctrl:
                                 flood_ctrl.group_delay_min = float(DELAY_BETWEEN_GROUP_MIN)
                                 flood_ctrl.group_delay_max = float(DELAY_BETWEEN_GROUP_MAX)
 
                         config = {
-                            "daily_limit":       DAILY_LIMIT,
-                            "send_delay":        DELAY_BETWEEN_SEND,
-                            "random_min":        DELAY_RANDOM_MIN,
-                            "random_max":        DELAY_RANDOM_MAX,
-                            "group_size":        GROUP_SIZE,
-                            "group_delay_min":   DELAY_BETWEEN_GROUP_MIN,
-                            "group_delay_max":   DELAY_BETWEEN_GROUP_MAX,
+                            "daily_limit": DAILY_LIMIT,
+                            "send_delay": DELAY_BETWEEN_SEND,
+                            "random_min": DELAY_RANDOM_MIN,
+                            "random_max": DELAY_RANDOM_MAX,
+                            "group_size": GROUP_SIZE,
+                            "group_delay_min": DELAY_BETWEEN_GROUP_MIN,
+                            "group_delay_max": DELAY_BETWEEN_GROUP_MAX,
                             "batch_pause_every": BATCH_PAUSE_EVERY,
-                            "batch_pause_min":   BATCH_PAUSE_MIN,
-                            "batch_pause_max":   BATCH_PAUSE_MAX,
+                            "batch_pause_min": BATCH_PAUSE_MIN,
+                            "batch_pause_max": BATCH_PAUSE_MAX,
                         }
                         await state_manager.save_config(config)
 
@@ -2873,18 +2691,6 @@ async def admin_command_processor() -> None:
 
                     except Exception as e:
                         logging.error(f"❌ [ADMIN] Error applying preset: {e}")
-
-                # RESET DAILY
-                elif cmd_type == "reset_daily":
-                    try:
-                        async with sending_lock:
-                            prev        = daily_count
-                            daily_count = 0
-                            daily_reset_date = datetime.now(timezone.utc).date()
-                            await save_daily()
-                        logging.info(f"✅ [ADMIN] Daily reset (was: {prev})")
-                    except Exception as e:
-                        logging.error(f"❌ [ADMIN] Error resetting daily: {e}")
 
                 # PAUSE WORKER
                 elif cmd_type == "pause_worker":
@@ -2903,6 +2709,18 @@ async def admin_command_processor() -> None:
                         logging.info(f"▶️ [ADMIN] Worker resumed")
                     except Exception as e:
                         logging.error(f"❌ [ADMIN] Error resuming worker: {e}")
+
+                # RESET DAILY
+                elif cmd_type == "reset_daily":
+                    try:
+                        async with sending_lock:
+                            prev = daily_count
+                            daily_count = 0
+                            daily_reset_date = datetime.now(timezone.utc).date()
+                            await save_daily()
+                        logging.info(f"✅ [ADMIN] Daily reset (was: {prev})")
+                    except Exception as e:
+                        logging.error(f"❌ [ADMIN] Error resetting daily: {e}")
 
                 # FLUSH QUEUE
                 elif cmd_type == "flush_queue":
@@ -2932,7 +2750,6 @@ async def admin_command_processor() -> None:
 
                         logging.info(f"🔄 [ADMIN] Restart initiated")
 
-                        # Cancel worker
                         if _worker_task and not _worker_task.done():
                             _worker_task.cancel()
                             try:
@@ -2940,7 +2757,6 @@ async def admin_command_processor() -> None:
                             except (asyncio.CancelledError, asyncio.TimeoutError):
                                 pass
 
-                        # Save queue
                         for i in range(3):
                             try:
                                 await queue_manager.save_queue(pending_queue)
@@ -2952,7 +2768,6 @@ async def admin_command_processor() -> None:
                                 )
                                 await asyncio.sleep(2)
 
-                        # Save state
                         pending_snapshot = (
                             get_queue_snapshot(pending_queue)
                             if pending_queue else []
@@ -2969,11 +2784,9 @@ async def admin_command_processor() -> None:
                                 )
                                 await asyncio.sleep(2)
 
-                        # Trigger shutdown
                         if _shutdown_event:
                             _shutdown_event.set()
 
-                        # Hard restart
                         logging.info(f"🔄 [ADMIN] Executing restart...")
                         try:
                             os.execv(sys.executable, [sys.executable] + sys.argv)
@@ -3002,7 +2815,7 @@ async def admin_command_processor() -> None:
 
 
 # ============================================================
-# === QUEUE WORKER (PRODUCTION-READY) ===
+# === QUEUE WORKER (FIXED) ===
 # ============================================================
 async def queue_worker(bot) -> None:
     """Main worker untuk kirim media universal dengan error recovery"""
@@ -3019,12 +2832,10 @@ async def queue_worker(bot) -> None:
     try:
         while True:
             try:
-                # Cek pause
                 if is_paused:
                     await asyncio.sleep(5)
                     continue
 
-                # Cek daily limit
                 await check_daily_reset()
                 if daily_count >= DAILY_LIMIT:
                     logging.info(
@@ -3034,7 +2845,6 @@ async def queue_worker(bot) -> None:
                     await asyncio.sleep(60)
                     continue
 
-                # Kumpulkan batch dari queue
                 batch: list = []
                 try:
                     first = await asyncio.wait_for(
@@ -3051,7 +2861,6 @@ async def queue_worker(bot) -> None:
                             break
 
                 except asyncio.TimeoutError:
-                    # Auto-save queue secara periodik
                     now = datetime.now(timezone.utc)
                     if (now - last_queue_save).total_seconds() >= 10:
                         try:
@@ -3066,27 +2875,20 @@ async def queue_worker(bot) -> None:
                 if not batch:
                     continue
 
-                # Track berapa item yang benar-benar di-get dari queue
                 items_gotten = len(batch)
-
-                # Proses batch
                 is_sending = True
                 media_items = []
 
                 for item in batch:
                     try:
-                        # Handle berbagai format dengan normalisasi
                         if not isinstance(item, (list, tuple)):
                             logging.warning(f"⚠️ Item queue bukan list/tuple, skip")
                             continue
                         
-                        # Normalize ke format 3-tuple (file_id, media_type, fp)
                         if len(item) == 2:
-                            # Old format: (file_id, media_type)
                             file_id, media_type = item
                             fp = {"file_id": file_id}
                         elif len(item) == 3:
-                            # New format: (file_id, media_type, fp)
                             file_id, media_type, fp = item
                         else:
                             logging.warning(
@@ -3094,7 +2896,6 @@ async def queue_worker(bot) -> None:
                             )
                             continue
                         
-                        # Validate types
                         if not isinstance(file_id, str) or not file_id:
                             logging.warning(f"⚠️ File ID invalid, skip")
                             continue
@@ -3141,7 +2942,6 @@ async def queue_worker(bot) -> None:
 
                 if not media_items:
                     is_sending = False
-                    # Hanya panggil task_done sebanyak item yang di-get
                     for _ in range(items_gotten):
                         try:
                             pending_queue.task_done()
@@ -3162,7 +2962,6 @@ async def queue_worker(bot) -> None:
                         send_list
                     )
                 except ValueError as e:
-                    # Handle chat migration
                     if str(e).startswith("CHAT_MIGRATED:"):
                         new_id = int(str(e).split(":")[1])
                         logging.info(
@@ -3216,7 +3015,6 @@ async def queue_worker(bot) -> None:
                                 logging.error(f"❌ Error marking sent: {e}")
                                 continue
 
-                        # ✅ NEW: Record success untuk flood recovery
                         try:
                             await flood_ctrl.record_success()
                         except Exception as e:
@@ -3233,7 +3031,6 @@ async def queue_worker(bot) -> None:
                             f"Queue unique: {queue_deduplicator.get_queue_size() if queue_deduplicator else '?'}"
                         )
                         
-                        # Save queue after success
                         try:
                             await queue_manager.save_queue(pending_queue)
                             last_queue_save = datetime.now(timezone.utc)
@@ -3248,7 +3045,6 @@ async def queue_worker(bot) -> None:
                         for file_id, media_type, fp_hash, fp_original in media_items:
                             try:
                                 if not pending_queue.full():
-                                    # Kembalikan fp original
                                     await pending_queue.put(
                                         (file_id, media_type, fp_original)
                                     )
@@ -3269,7 +3065,6 @@ async def queue_worker(bot) -> None:
                             f"dikembalikan ke queue"
                         )
                         
-                        # Save queue after failure
                         try:
                             await queue_manager.save_queue(pending_queue)
                             last_queue_save = datetime.now(timezone.utc)
@@ -3279,7 +3074,6 @@ async def queue_worker(bot) -> None:
                     except Exception as e:
                         logging.error(f"❌ Error processing failure: {e}")
 
-                # Task done HANYA untuk items yang di-get, bukan yang di-put kembali
                 for _ in range(items_gotten):
                     try:
                         pending_queue.task_done()
@@ -3288,7 +3082,6 @@ async def queue_worker(bot) -> None:
 
                 is_sending = False
 
-                # Auto-save periodik
                 now = datetime.now(timezone.utc)
                 if (
                     (now - last_save_time).total_seconds() >=
@@ -3305,7 +3098,6 @@ async def queue_worker(bot) -> None:
                             )
                             await asyncio.sleep(5)
 
-                # Cleanup periodik
                 iteration_count += 1
                 if iteration_count % 100 == 0:
                     try:
@@ -3317,7 +3109,6 @@ async def queue_worker(bot) -> None:
                     except Exception as e:
                         logging.error(f"❌ Error cleanup: {e}")
 
-                # Batch pause
                 if sent_since_pause >= BATCH_PAUSE_EVERY:
                     pause = random.uniform(BATCH_PAUSE_MIN, BATCH_PAUSE_MAX)
                     logging.info(
@@ -3329,7 +3120,7 @@ async def queue_worker(bot) -> None:
                 else:
                     try:
                         group_delay = flood_ctrl.get_group_delay()
-                        send_delay  = DELAY_BETWEEN_SEND + random.uniform(
+                        send_delay = DELAY_BETWEEN_SEND + random.uniform(
                             DELAY_RANDOM_MIN, DELAY_RANDOM_MAX
                         )
                         total_delay = group_delay + send_delay
@@ -3344,7 +3135,6 @@ async def queue_worker(bot) -> None:
                 )
                 is_sending = False
                 
-                # FINAL SAVE
                 try:
                     await queue_manager.save_queue(pending_queue)
                     logging.info(
@@ -3356,10 +3146,9 @@ async def queue_worker(bot) -> None:
                         f"❌ [BOT: {BOT_NAME}] Gagal save queue saat cancel: {e}"
                     )
                 
-                # ✅ NEW: Save flood state
                 try:
                     if flood_ctrl:
-                        await flood_ctrl.save_state(state_manager)
+                        await flood_ctrl.save_state()
                     logging.info(f"💾 [BOT: {BOT_NAME}] Flood state saved")
                 except Exception as e:
                     logging.error(
@@ -3389,7 +3178,7 @@ async def queue_worker(bot) -> None:
 
 
 # ============================================================
-# === HANDLERS ===
+# === MESSAGE HANDLERS ===
 # ============================================================
 async def forward_media(
     update: Update,
@@ -3400,14 +3189,12 @@ async def forward_media(
     if not msg:
         return
 
-    # Check source chat dulu
     if (
         ALLOWED_SOURCE_CHATS and
         update.effective_chat.id not in ALLOWED_SOURCE_CHATS
     ):
         return
 
-    # Cek apakah message memiliki media
     has_media = (
         msg.video or msg.document or msg.photo or msg.audio or
         msg.animation or msg.voice or msg.video_note or msg.sticker
@@ -3417,7 +3204,6 @@ async def forward_media(
         return
 
     try:
-        # Get fingerprint dengan error handling
         try:
             fp = get_fingerprint(msg)
         except Exception as e:
@@ -3430,19 +3216,17 @@ async def forward_media(
         
         media_type = fp.get("media_type")
         
-        # Cek apakah media type diizinkan
         if media_type not in ALLOWED_MEDIA_TYPES:
             logging.info(
                 f"⏭️ [BOT: {BOT_NAME}] Media type '{media_type}' tidak diizinkan"
             )
             return
 
-        file_id  = fp["file_id"]
-        fp_hash  = make_hash(fp)
-        mtype    = fp["media_type"]
+        file_id = fp["file_id"]
+        fp_hash = make_hash(fp)
+        mtype = fp["media_type"]
         file_name = fp.get("file_name", "unknown")
 
-        # CHECK 1: GLOBAL SENT
         try:
             if await duplicate_checker.is_duplicate_safe(file_id, fp_hash):
                 logging.info(
@@ -3453,7 +3237,6 @@ async def forward_media(
         except Exception as e:
             logging.error(f"❌ Error duplicate check: {e}")
 
-        # CHECK 2: QUEUE (thread-safe check)
         if queue_deduplicator:
             composite_key = f"{file_id}:{fp_hash}"
             if composite_key in queue_deduplicator._queue_items:
@@ -3463,7 +3246,6 @@ async def forward_media(
                 )
                 return
 
-        # TAMBAH KE QUEUE dengan dedup
         if queue_deduplicator:
             success = await queue_deduplicator.add_to_queue(
                 file_id, fp_hash, (file_id, mtype, fp)
@@ -3501,22 +3283,14 @@ async def forward_media(
 # ============================================================
 # === ADMIN COMMANDS ===
 # ============================================================
-async def cmd_ping(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Ping command"""
+async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         await update.message.reply_text("🏓 Pong!")
     except Exception as e:
         logging.error(f"❌ Error di cmd_ping: {e}")
 
 
-async def cmd_help(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Help command dengan flood commands"""
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_moderator(update):
         await update.message.reply_text("❌ Akses ditolak")
         return
@@ -3565,11 +3339,7 @@ async def cmd_help(
         await update.message.reply_text("❌ Error menampilkan help")
 
 
-async def cmd_status(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Updated status command dengan flood recovery info"""
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_moderator(update):
         await update.message.reply_text("❌ Akses ditolak")
         return
@@ -3605,7 +3375,6 @@ async def cmd_status(
                     f"{int(diff.total_seconds() // 3600)} jam lalu"
                 )
 
-        # ✅ NEW: Get flood status dengan recovery info
         flood_status = flood_ctrl.get_status() if flood_ctrl else "N/A"
         recovery = flood_ctrl.get_recovery_progress() if flood_ctrl else {}
         
@@ -3643,11 +3412,7 @@ async def cmd_status(
         await update.message.reply_text("❌ Error menampilkan status")
 
 
-async def cmd_stats(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Stats command - Plain text"""
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_moderator(update):
         await update.message.reply_text("❌ Akses ditolak")
         return
@@ -3687,242 +3452,185 @@ async def cmd_stats(
         await update.message.reply_text("❌ Error menampilkan stats")
 
 
-async def cmd_globalstats(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Global stats command - Plain text"""
+async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_moderator(update):
         await update.message.reply_text("❌ Akses ditolak")
         return
+    
+    try:
+        admin_command_queue.put_nowait({
+            "type": "pause_worker",
+            "data": {},
+            "id": str(time.time())
+        })
+        
+        name = update.effective_user.first_name
+        await update.message.reply_text(f"⏸️ Worker dijeda oleh {name}")
+        logging.info(
+            f"📨 [ADMIN] Queued pause command by {name}"
+        )
+    except Exception as e:
+        logging.error(f"❌ Error di cmd_pause: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_moderator(update):
+        await update.message.reply_text("❌ Akses ditolak")
+        return
+    
+    try:
+        admin_command_queue.put_nowait({
+            "type": "resume_worker",
+            "data": {},
+            "id": str(time.time())
+        })
+        
+        name = update.effective_user.first_name
+        await update.message.reply_text(f"▶️ Worker dilanjutkan oleh {name}")
+        logging.info(
+            f"📨 [ADMIN] Queued resume command by {name}"
+        )
+    except Exception as e:
+        logging.error(f"❌ Error di cmd_resume: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def cmd_resetdaily(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_superadmin(update):
+        await update.message.reply_text(
+            "❌ Hanya superadmin yang bisa reset daily"
+        )
+        return
+
+    if not await admin_rate_limit_check(update.effective_user.id):
+        await update.message.reply_text("⏳ Terlalu cepat, tunggu 5 detik")
+        return
 
     try:
-        global_info = global_sent_manager.get_info()
-
-        text = (
-            f"🌍 STATISTIK GLOBAL SENT — SHARED\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📊 Total Entry      : {global_info['total_entries']}\n"
-            f"📄 Jumlah File      : {global_info['total_files']}\n"
-            f"📁 File Aktif       : {global_info['current_file']}\n"
-            f"📝 Entry di File    : {global_info['current_count']}/{global_info['max_per_file']}\n"
-            f"🔒 Lock Type        : OS-level (fcntl) + asyncio + threading\n"
-            f"🔄 Last Reload      : {global_info['last_reload']}\n"
-            f"⏱️ Reload Age       : {global_info['reload_age']}\n"
-            f"Ⲥ Reload Interval  : {global_info['reload_interval']}\n"
-            f"📂 Known Files      : {global_info['known_files']}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"✅ Anti-Duplikat:\n"
-            f"   • Triple-check sebelum kirim\n"
-            f"   • Queue deduplication\n"
-            f"   • Atomic write dengan fsync\n"
-            f"   • Queue persistence (auto-save 10s)\n"
-            f"   • Thread-safe operations\n"
+        admin_command_queue.put_nowait({
+            "type": "reset_daily",
+            "data": {},
+            "id": str(time.time())
+        })
+        
+        name = update.effective_user.first_name
+        await update.message.reply_text(
+            f"🔄 Daily counter sedang direset oleh {name}..."
         )
-
-        files = global_sent_manager._get_all_sent_files()
-        if files:
-            text += f"\n📝 File Details (Last 5):\n"
-            for f in files[-5:]:
-                try:
-                    with open(f, "r", encoding="utf-8") as fp:
-                        data = json.load(fp)
-                        count = len(data) if isinstance(data, list) else 0
-                    size_kb = f.stat().st_size / 1024
-                    is_active = "✅" if f == global_sent_manager._current_file else "📦"
-                    text += (
-                        f"{is_active} {f.name} | "
-                        f"{count}/{global_info['max_per_file']} | "
-                        f"{size_kb:.1f}KB\n"
-                    )
-                except Exception as e:
-                    logging.warning(f"⚠️ Error reading file {f.name}: {e}")
-                    text += f"❌ {f.name}\n"
-
-        await update.message.reply_text(text)
+        logging.info(
+            f"📨 [ADMIN] Queued reset daily command by {name}"
+        )
     except Exception as e:
-        logging.error(f"❌ Error di cmd_globalstats: {e}")
-        await update.message.reply_text("❌ Error menampilkan global stats")
+        logging.error(f"❌ Error di cmd_resetdaily: {e}")
+        await update.message.reply_text("❌ Error resetting daily")
 
 
-async def cmd_checkqueue(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Debug: Check queue format"""
+async def cmd_flushpending(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_superadmin(update):
+        await update.message.reply_text(
+            "❌ Hanya superadmin yang bisa flush pending"
+        )
+        return
+
+    if not await admin_rate_limit_check(update.effective_user.id):
+        await update.message.reply_text("⏳ Terlalu cepat, tunggu 5 detik")
+        return
+
+    try:
+        admin_command_queue.put_nowait({
+            "type": "flush_queue",
+            "data": {},
+            "id": str(time.time())
+        })
+        
+        name = update.effective_user.first_name
+        await update.message.reply_text(
+            f"🗑️ Queue sedang dikosongkan oleh {name}..."
+        )
+        logging.info(
+            f"📨 [ADMIN] Queued flush queue command by {name}"
+        )
+    except Exception as e:
+        logging.error(f"❌ Error di cmd_flushpending: {e}")
+        await update.message.reply_text("❌ Error flushing pending")
+
+
+async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_superadmin(update):
         await update.message.reply_text("❌ Hanya superadmin")
         return
 
+    if not await admin_rate_limit_check(update.effective_user.id):
+        await update.message.reply_text("⏳ Terlalu cepat, tunggu 5 detik")
+        return
+
     try:
-        snapshot = get_queue_snapshot(pending_queue)
+        name = update.effective_user.first_name
         
-        if not snapshot:
-            await update.message.reply_text("📦 Queue kosong")
-            return
+        admin_command_queue.put_nowait({
+            "type": "restart_bot",
+            "data": {},
+            "id": str(time.time())
+        })
         
-        format_2tuple = 0
-        format_3tuple = 0
-        invalid = 0
-        
-        for item in snapshot[:10]:
-            if isinstance(item, (list, tuple)):
-                if len(item) == 2:
-                    format_2tuple += 1
-                elif len(item) == 3:
-                    format_3tuple += 1
-                else:
-                    invalid += 1
-            else:
-                invalid += 1
-        
-        text = (
-            f"📊 Queue Format Analysis\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"Total items: {len(snapshot)}\n"
-            f"2-tuple (old): {format_2tuple}\n"
-            f"3-tuple (new): {format_3tuple}\n"
-            f"Invalid: {invalid}\n\n"
-            f"Sample (first 3):\n"
+        await update.message.reply_text(
+            f"🔄 Bot akan RESTART dalam 15 detik oleh {name}\n"
+            f"├─ Waiting for current operations...\n"
+            f"├─ Saving queue...\n"
+            f"├─ Stopping workers...\n"
+            f"└─ Restarting bot...\n\n"
+            f"⏳ Tunggu ~15-25 detik..."
         )
         
-        for i, item in enumerate(snapshot[:3]):
-            if isinstance(item, (list, tuple)):
-                if len(item) >= 2:
-                    file_id = str(item)[:8] if item else "?"
-                    media_type = str(item) if len(item) > 1 else "?"
-                    text += f"{i}: ({file_id}..., {media_type})\n"
-            else:
-                text += f"{i}: INVALID\n"
-        
-        await update.message.reply_text(text)
+        logging.info(
+            f"📨 [ADMIN] Queued restart command by {name}"
+        )
     
     except Exception as e:
-        logging.error(f"❌ Error di cmd_checkqueue: {e}")
+        logging.error(f"❌ Error di cmd_restart: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
 
 
-async def cmd_sentfiles(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Sent files command - Plain text"""
-    if not is_moderator(update):
-        await update.message.reply_text("❌ Akses ditolak")
-        return
-
-    try:
-        files = global_sent_manager._get_all_sent_files()
-        total_cache = len(global_sent_manager._cache)
-
-        if not files:
-            await update.message.reply_text(
-                "📂 Tidak ada file sent tersimpan"
-            )
-            return
-
-        text = (
-            f"📂 FILE SENT GLOBAL — SHARED\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📊 Total cache : {total_cache} entry\n"
-            f"📄 Jumlah file : {len(files)} file\n"
-            f"🔒 Lock Type   : OS-level (fcntl) + asyncio + threading\n"
-            f"🔄 Auto-reload : Setiap 10 detik\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"File Details:\n"
-        )
-
-        for f in files:
-            try:
-                with open(f, "r", encoding="utf-8") as fp:
-                    data = json.load(fp)
-                    count = len(data) if isinstance(data, list) else 0
-                size_kb = f.stat().st_size / 1024
-                is_active = (
-                    "✅ Aktif" if f == global_sent_manager._current_file
-                    else "📦 Arsip"
-                )
-                text += (
-                    f"{is_active} | {f.name} | "
-                    f"{count}/{MAX_SENT_PER_FILE} | "
-                    f"{size_kb:.1f}KB\n"
-                )
-            except Exception as e:
-                logging.warning(f"⚠️ Error reading file {f.name}: {e}")
-                text += f"❌ {f.name}\n"
-
-        await update.message.reply_text(text)
-    except Exception as e:
-        logging.error(f"❌ Error di cmd_sentfiles: {e}")
-        await update.message.reply_text("❌ Error menampilkan sent files")
-
-
-async def cmd_tuning(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Menu tuning lengkap"""
+async def cmd_shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_superadmin(update):
         await update.message.reply_text("❌ Hanya superadmin")
         return
 
+    if not await admin_rate_limit_check(update.effective_user.id):
+        await update.message.reply_text("⏳ Terlalu cepat, tunggu 5 detik")
+        return
+
     try:
-        text = (
-            "⚙️ HANAYA BOT v5.9 — TUNING MENU\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "CURRENT SETTINGS:\n\n"
-            "Rate Limiting:\n"
-            f"├ Delay antar kirim    : {DELAY_BETWEEN_SEND}s\n"
-            f"├ Random min           : {DELAY_RANDOM_MIN}s\n"
-            f"├ Random max           : {DELAY_RANDOM_MAX}s\n"
-            f"├ Group size           : {GROUP_SIZE} media\n"
-            f"├ Delay antar group    : {DELAY_BETWEEN_GROUP_MIN}-{DELAY_BETWEEN_GROUP_MAX}s\n"
-            f"├ Batch pause every    : {BATCH_PAUSE_EVERY} media\n"
-            f"└ Batch pause duration : {BATCH_PAUSE_MIN}-{BATCH_PAUSE_MAX}s\n\n"
-            "Daily Limit:\n"
-            f"├ Daily limit          : {daily_count}/{DAILY_LIMIT} ({(daily_count/DAILY_LIMIT*100):.1f}%)\n"
-            f"└ Reset date           : {daily_reset_date}\n\n"
-            "Queue & Retry:\n"
-            f"├ Max queue size       : {MAX_QUEUE_SIZE} media\n"
-            f"├ Current queue        : {pending_queue.qsize()} media\n"
-            f"├ Max retries          : {MAX_RETRIES}\n"
-            f"└ Auto-save interval   : {AUTO_SAVE_INTERVAL}s\n\n"
-            "Flood Control:\n"
-            f"├ Flood count          : {flood_ctrl.flood_count if flood_ctrl else 0}\n"
-            f"├ Total floods         : {flood_ctrl.total_flood if flood_ctrl else 0}\n"
-            f"├ Current penalty      : {flood_ctrl.penalty if flood_ctrl else 0:.0f}s\n"
-            f"└ Cooling              : {'Yes' if (flood_ctrl.is_cooling if flood_ctrl else False) else 'No'}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "TUNING COMMANDS:\n\n"
-            "Management:\n"
-            "/pause - Pause worker\n"
-            "/resume - Resume worker\n"
-            "/resetdaily - Reset daily counter\n"
-            "/flushpending - Kosongkan queue\n"
-            "/resetflood - Reset flood counter\n\n"
-            "Presets:\n"
-            "/presets - Show preset configs\n"
-            "/applypreset <name> - Apply preset\n\n"
-            "Info & Debug:\n"
-            "/tuning - Show this menu\n"
-            "/currentconfig - Show detailed config\n"
-            "/log - Show latest logs\n\n"
-            "Management:\n"
-            "/restart - Restart bot gracefully\n"
-            "/shutdown - Shutdown bot gracefully\n"
+        name = update.effective_user.first_name
+        await update.message.reply_text(
+            f"🛑 Bot akan shutdown dalam 5 detik oleh {name}\n"
+            f"Queue akan disimpan otomatis..."
         )
-        
-        await update.message.reply_text(text)
+        logging.info(
+            f"🛑 [BOT: {BOT_NAME}] Shutdown diminta oleh {name} "
+            f"({update.effective_user.id})"
+        )
+
+        async def delayed_shutdown():
+            try:
+                await asyncio.sleep(5)
+                if _shutdown_event:
+                    _shutdown_event.set()
+            except asyncio.CancelledError:
+                logging.info("✅ [BOT] delayed_shutdown task dibatalkan")
+                raise
+
+        task = asyncio.create_task(delayed_shutdown())
+        _tracked_tasks.add(task)
+        task.add_done_callback(_tracked_tasks.discard)
+
     except Exception as e:
-        logging.error(f"❌ Error di cmd_tuning: {e}")
+        logging.error(f"❌ Error di cmd_shutdown: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
 
 
-async def cmd_currentconfig(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Show current detailed config - Plain text"""
+async def cmd_currentconfig(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_moderator(update):
         await update.message.reply_text("❌ Akses ditolak")
         return
@@ -3987,11 +3695,7 @@ async def cmd_currentconfig(
         await update.message.reply_text(f"❌ Error: {e}")
 
 
-async def cmd_presets(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Show preset configurations"""
+async def cmd_presets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_superadmin(update):
         await update.message.reply_text("❌ Hanya superadmin")
         return
@@ -4042,11 +3746,7 @@ async def cmd_presets(
         await update.message.reply_text(f"❌ Error: {e}")
 
 
-async def cmd_applypreset(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Apply preset configuration"""
+async def cmd_applypreset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_superadmin(update):
         await update.message.reply_text("❌ Hanya superadmin")
         return
@@ -4073,7 +3773,6 @@ async def cmd_applypreset(
             )
             return
 
-        # Queue command
         try:
             admin_command_queue.put_nowait({
                 "type": "apply_preset",
@@ -4095,258 +3794,220 @@ async def cmd_applypreset(
         await update.message.reply_text(f"❌ Error: {e}")
 
 
-async def cmd_pause(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Pause command"""
-    if not is_moderator(update):
-        await update.message.reply_text("❌ Akses ditolak")
-        return
-    
-    try:
-        admin_command_queue.put_nowait({
-            "type": "pause_worker",
-            "data": {},
-            "id": str(time.time())
-        })
-        
-        name = update.effective_user.first_name
-        await update.message.reply_text(f"⏸️ Worker dijeda oleh {name}")
-        logging.info(
-            f"📨 [ADMIN] Queued pause command by {name}"
-        )
-    except Exception as e:
-        logging.error(f"❌ Error di cmd_pause: {e}")
-        await update.message.reply_text(f"❌ Error: {e}")
-
-
-async def cmd_resume(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Resume command"""
-    if not is_moderator(update):
-        await update.message.reply_text("❌ Akses ditolak")
-        return
-    
-    try:
-        admin_command_queue.put_nowait({
-            "type": "resume_worker",
-            "data": {},
-            "id": str(time.time())
-        })
-        
-        name = update.effective_user.first_name
-        await update.message.reply_text(f"▶️ Worker dilanjutkan oleh {name}")
-        logging.info(
-            f"📨 [ADMIN] Queued resume command by {name}"
-        )
-    except Exception as e:
-        logging.error(f"❌ Error di cmd_resume: {e}")
-        await update.message.reply_text(f"❌ Error: {e}")
-
-
-async def cmd_resetdaily(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Reset daily command"""
-    if not is_superadmin(update):
-        await update.message.reply_text(
-            "❌ Hanya superadmin yang bisa reset daily"
-        )
-        return
-
-    if not await admin_rate_limit_check(update.effective_user.id):
-        await update.message.reply_text("⏳ Terlalu cepat, tunggu 5 detik")
-        return
-
-    try:
-        admin_command_queue.put_nowait({
-            "type": "reset_daily",
-            "data": {},
-            "id": str(time.time())
-        })
-        
-        name = update.effective_user.first_name
-        await update.message.reply_text(
-            f"🔄 Daily counter sedang direset oleh {name}..."
-        )
-        logging.info(
-            f"📨 [ADMIN] Queued reset daily command by {name}"
-        )
-    except Exception as e:
-        logging.error(f"❌ Error di cmd_resetdaily: {e}")
-        await update.message.reply_text("❌ Error resetting daily")
-
-
-async def cmd_flushpending(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Flush pending command"""
-    if not is_superadmin(update):
-        await update.message.reply_text(
-            "❌ Hanya superadmin yang bisa flush pending"
-        )
-        return
-
-    if not await admin_rate_limit_check(update.effective_user.id):
-        await update.message.reply_text("⏳ Terlalu cepat, tunggu 5 detik")
-        return
-
-    try:
-        admin_command_queue.put_nowait({
-            "type": "flush_queue",
-            "data": {},
-            "id": str(time.time())
-        })
-        
-        name = update.effective_user.first_name
-        await update.message.reply_text(
-            f"🗑️ Queue sedang dikosongkan oleh {name}..."
-        )
-        logging.info(
-            f"📨 [ADMIN] Queued flush queue command by {name}"
-        )
-    except Exception as e:
-        logging.error(f"❌ Error di cmd_flushpending: {e}")
-        await update.message.reply_text("❌ Error flushing pending")
-
-
-async def cmd_resetflood(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Reset flood counter"""
+async def cmd_checkqueue(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_superadmin(update):
         await update.message.reply_text("❌ Hanya superadmin")
         return
 
-    if not await admin_rate_limit_check(update.effective_user.id):
-        await update.message.reply_text("⏳ Terlalu cepat, tunggu 5 detik")
+    try:
+        snapshot = get_queue_snapshot(pending_queue)
+        
+        if not snapshot:
+            await update.message.reply_text("📦 Queue kosong")
+            return
+        
+        format_2tuple = 0
+        format_3tuple = 0
+        invalid = 0
+        
+        for item in snapshot[:10]:
+            if isinstance(item, (list, tuple)):
+                if len(item) == 2:
+                    format_2tuple += 1
+                elif len(item) == 3:
+                    format_3tuple += 1
+                else:
+                    invalid += 1
+            else:
+                invalid += 1
+        
+        text = (
+            f"📊 Queue Format Analysis\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Total items: {len(snapshot)}\n"
+            f"2-tuple (old): {format_2tuple}\n"
+            f"3-tuple (new): {format_3tuple}\n"
+            f"Invalid: {invalid}\n\n"
+            f"Sample (first 3):\n"
+        )
+        
+        for i, item in enumerate(snapshot[:3]):
+            if isinstance(item, (list, tuple)):
+                if len(item) >= 2:
+                    file_id = str(item)[:8] if item else "?"
+                    media_type = str(item) if len(item) > 1 else "?"
+                    text += f"{i}: ({file_id}..., {media_type})\n"
+            else:
+                text += f"{i}: INVALID\n"
+        
+        await update.message.reply_text(text)
+    
+    except Exception as e:
+        logging.error(f"❌ Error di cmd_checkqueue: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def cmd_sentfiles(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_moderator(update):
+        await update.message.reply_text("❌ Akses ditolak")
         return
 
     try:
-        if flood_ctrl:
-            prev_count = flood_ctrl.flood_count
-            prev_total = flood_ctrl.total_flood
-            
-            flood_ctrl.flood_count = 0
-            flood_ctrl.total_flood = 0
-            flood_ctrl.penalty = 0.0
-            flood_ctrl.is_cooling = False
-            flood_ctrl.last_flood_time = None
-            
-            await flood_ctrl.save_state()
+        files = global_sent_manager._get_all_sent_files()
+        total_cache = len(global_sent_manager._cache)
 
-            name = update.effective_user.first_name
+        if not files:
             await update.message.reply_text(
-                f"✅ Flood counter direset oleh {name}\n"
-                f"├ Previous count : {prev_count}\n"
-                f"├ Previous total : {prev_total}\n"
-                f"└ Status         : Normal"
+                "📂 Tidak ada file sent tersimpan"
             )
-            logging.info(
-                f"🔄 [BOT: {BOT_NAME}] Flood reset by {name} "
-                f"(count: {prev_count}, total: {prev_total})"
-            )
-        else:
-            await update.message.reply_text("⚠️ Flood controller belum diinisialisasi")
-    except Exception as e:
-        logging.error(f"❌ Error di cmd_resetflood: {e}")
-        await update.message.reply_text(f"❌ Error: {e}")
+            return
 
-
-async def cmd_restart(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Restart command - graceful restart dengan state save"""
-    if not is_superadmin(update):
-        await update.message.reply_text("❌ Hanya superadmin")
-        return
-
-    if not await admin_rate_limit_check(update.effective_user.id):
-        await update.message.reply_text("⏳ Terlalu cepat, tunggu 5 detik")
-        return
-
-    try:
-        name = update.effective_user.first_name
-        
-        # Queue restart command
-        admin_command_queue.put_nowait({
-            "type": "restart_bot",
-            "data": {},
-            "id": str(time.time())
-        })
-        
-        await update.message.reply_text(
-            f"🔄 Bot akan RESTART dalam 15 detik oleh {name}\n"
-            f"├─ Waiting for current operations...\n"
-            f"├─ Saving queue...\n"
-            f"├─ Stopping workers...\n"
-            f"└─ Restarting bot...\n\n"
-            f"⏳ Tunggu ~15-25 detik..."
-        )
-        
-        logging.info(
-            f"📨 [ADMIN] Queued restart command by {name}"
-        )
-    
-    except Exception as e:
-        logging.error(f"❌ Error di cmd_restart: {e}")
-        await update.message.reply_text(f"❌ Error: {e}")
-
-
-async def cmd_shutdown(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Shutdown command - graceful shutdown"""
-    if not is_superadmin(update):
-        await update.message.reply_text("❌ Hanya superadmin")
-        return
-
-    if not await admin_rate_limit_check(update.effective_user.id):
-        await update.message.reply_text("⏳ Terlalu cepat, tunggu 5 detik")
-        return
-
-    try:
-        name = update.effective_user.first_name
-        await update.message.reply_text(
-            f"🛑 Bot akan shutdown dalam 5 detik oleh {name}\n"
-            f"Queue akan disimpan otomatis..."
-        )
-        logging.info(
-            f"🛑 [BOT: {BOT_NAME}] Shutdown diminta oleh {name} "
-            f"({update.effective_user.id})"
+        text = (
+            f"📂 FILE SENT GLOBAL — SHARED\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 Total cache : {total_cache} entry\n"
+            f"📄 Jumlah file : {len(files)} file\n"
+            f"🔒 Lock Type   : OS-level (fcntl) + asyncio + threading\n"
+            f"🔄 Auto-reload : Setiap 10 detik\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"File Details:\n"
         )
 
-        async def delayed_shutdown():
+        for f in files:
             try:
-                await asyncio.sleep(5)
-                if _shutdown_event:
-                    _shutdown_event.set()
-            except asyncio.CancelledError:
-                logging.info("✅ [BOT] delayed_shutdown task dibatalkan")
-                raise
+                with open(f, "r", encoding="utf-8") as fp:
+                    data = json.load(fp)
+                    count = len(data) if isinstance(data, list) else 0
+                size_kb = f.stat().st_size / 1024
+                is_active = (
+                    "✅ Aktif" if f == global_sent_manager._current_file
+                    else "📦 Arsip"
+                )
+                text += (
+                    f"{is_active} | {f.name} | "
+                    f"{count}/{MAX_SENT_PER_FILE} | "
+                    f"{size_kb:.1f}KB\n"
+                )
+            except Exception as e:
+                logging.warning(f"⚠️ Error reading file {f.name}: {e}")
+                text += f"❌ {f.name}\n"
 
-        task = asyncio.create_task(delayed_shutdown())
-        _tracked_tasks.add(task)
-        task.add_done_callback(_tracked_tasks.discard)
-
+        await update.message.reply_text(text)
     except Exception as e:
-        logging.error(f"❌ Error di cmd_shutdown: {e}")
+        logging.error(f"❌ Error di cmd_sentfiles: {e}")
+        await update.message.reply_text("❌ Error menampilkan sent files")
+
+
+async def cmd_globalstats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_moderator(update):
+        await update.message.reply_text("❌ Akses ditolak")
+        return
+
+    try:
+        global_info = global_sent_manager.get_info()
+
+        text = (
+            f"🌍 STATISTIK GLOBAL SENT — SHARED\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 Total Entry      : {global_info['total_entries']}\n"
+            f"📄 Jumlah File      : {global_info['total_files']}\n"
+            f"📁 File Aktif       : {global_info['current_file']}\n"
+            f"📝 Entry di File    : {global_info['current_count']}/{global_info['max_per_file']}\n"
+            f"🔒 Lock Type        : OS-level (fcntl) + asyncio + threading\n"
+            f"🔄 Last Reload      : {global_info['last_reload']}\n"
+            f"⏱️ Reload Age       : {global_info['reload_age']}\n"
+            f"Ⲥ Reload Interval  : {global_info['reload_interval']}\n"
+            f"📂 Known Files      : {global_info['known_files']}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"✅ Anti-Duplikat:\n"
+            f"   • Triple-check sebelum kirim\n"
+            f"   • Queue deduplication\n"
+            f"   • Atomic write dengan fsync\n"
+            f"   • Queue persistence (auto-save 10s)\n"
+            f"   • Thread-safe operations\n"
+        )
+
+        files = global_sent_manager._get_all_sent_files()
+        if files:
+            text += f"\n📝 File Details (Last 5):\n"
+            for f in files[-5:]:
+                try:
+                    with open(f, "r", encoding="utf-8") as fp:
+                        data = json.load(fp)
+                        count = len(data) if isinstance(data, list) else 0
+                    size_kb = f.stat().st_size / 1024
+                    is_active = "✅" if f == global_sent_manager._current_file else "📦"
+                    text += (
+                        f"{is_active} {f.name} | "
+                        f"{count}/{global_info['max_per_file']} | "
+                        f"{size_kb:.1f}KB\n"
+                    )
+                except Exception as e:
+                    logging.warning(f"⚠️ Error reading file {f.name}: {e}")
+                    text += f"❌ {f.name}\n"
+
+        await update.message.reply_text(text)
+    except Exception as e:
+        logging.error(f"❌ Error di cmd_globalstats: {e}")
+        await update.message.reply_text("❌ Error menampilkan global stats")
+
+
+async def cmd_tuning(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_superadmin(update):
+        await update.message.reply_text("❌ Hanya superadmin")
+        return
+
+    try:
+        text = (
+            "⚙️ HANAYA BOT v5.9 — TUNING MENU\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "CURRENT SETTINGS:\n\n"
+            "Rate Limiting:\n"
+            f"├ Delay antar kirim    : {DELAY_BETWEEN_SEND}s\n"
+            f"├ Random min           : {DELAY_RANDOM_MIN}s\n"
+            f"├ Random max           : {DELAY_RANDOM_MAX}s\n"
+            f"├ Group size           : {GROUP_SIZE} media\n"
+            f"├ Delay antar group    : {DELAY_BETWEEN_GROUP_MIN}-{DELAY_BETWEEN_GROUP_MAX}s\n"
+            f"├ Batch pause every    : {BATCH_PAUSE_EVERY} media\n"
+            f"└ Batch pause duration : {BATCH_PAUSE_MIN}-{BATCH_PAUSE_MAX}s\n\n"
+            "Daily Limit:\n"
+            f"├ Daily limit          : {daily_count}/{DAILY_LIMIT} ({(daily_count/DAILY_LIMIT*100):.1f}%)\n"
+            f"└ Reset date           : {daily_reset_date}\n\n"
+            "Queue & Retry:\n"
+            f"├ Max queue size       : {MAX_QUEUE_SIZE} media\n"
+            f"├ Current queue        : {pending_queue.qsize()} media\n"
+            f"├ Max retries          : {MAX_RETRIES}\n"
+            f"└ Auto-save interval   : {AUTO_SAVE_INTERVAL}s\n\n"
+            "Flood Control:\n"
+            f"├ Flood count          : {flood_ctrl.flood_count if flood_ctrl else 0}\n"
+            f"├ Total floods         : {flood_ctrl.total_flood if flood_ctrl else 0}\n"
+            f"├ Current penalty      : {flood_ctrl.penalty if flood_ctrl else 0:.0f}s\n"
+            f"└ Cooling              : {'Yes' if (flood_ctrl.is_cooling if flood_ctrl else False) else 'No'}\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "TUNING COMMANDS:\n\n"
+            "Management:\n"
+            "/pause - Pause worker\n"
+            "/resume - Resume worker\n"
+            "/resetdaily - Reset daily counter\n"
+            "/flushpending - Kosongkan queue\n\n"
+            "Presets:\n"
+            "/presets - Show preset configs\n"
+            "/applypreset <name> - Apply preset\n\n"
+            "Info & Debug:\n"
+            "/tuning - Show this menu\n"
+            "/currentconfig - Show detailed config\n\n"
+            "Management:\n"
+            "/restart - Restart bot gracefully\n"
+            "/shutdown - Shutdown bot gracefully\n"
+        )
+        
+        await update.message.reply_text(text)
+    except Exception as e:
+        logging.error(f"❌ Error di cmd_tuning: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
 
 
-async def cmd_log(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Log command dengan error handling"""
+async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_superadmin(update):
         await update.message.reply_text(
             "❌ Hanya superadmin yang bisa lihat log"
@@ -4398,11 +4059,7 @@ async def cmd_log(
         await update.message.reply_text(f"❌ Gagal baca log: {e}")
 
 
-async def cmd_floodhistory(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Show flood event history"""
+async def cmd_floodhistory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_superadmin(update):
         await update.message.reply_text("❌ Hanya superadmin")
         return
@@ -4414,7 +4071,6 @@ async def cmd_floodhistory(
             )
             return
 
-        # Get recent events
         recent_events = await flood_event_logger.get_recent_events(limit=10)
         flood_stats = await flood_event_logger.get_flood_stats()
 
@@ -4424,7 +4080,6 @@ async def cmd_floodhistory(
             )
             return
 
-        # Format events
         text = (
             f"📋 Flood Event History — {BOT_NAME}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -4451,7 +4106,6 @@ async def cmd_floodhistory(
             }.get(event.get("severity", "medium"), "⚪")
 
             timestamp = event.get("timestamp", "N/A")
-            # Extract time only
             try:
                 dt = datetime.fromisoformat(timestamp)
                 time_str = dt.strftime("%H:%M:%S")
@@ -4487,7 +4141,7 @@ flask_app = Flask(__name__, template_folder='templates')
 
 @flask_app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint dengan proper status dan detailed checks - ENHANCED"""
+    """Health check endpoint dengan proper status dan detailed checks"""
     try:
         now = datetime.now(timezone.utc)
         uptime = now - start_time
@@ -4500,10 +4154,6 @@ def health_check():
             "telegram_api": False
         }
         
-        # Check global state
-        global_files = 0
-        global_entries = 0
-        reload_age = "N/A"
         try:
             global_files = len(global_sent_manager._get_all_sent_files())
             global_entries = len(global_sent_manager._cache)
@@ -4514,7 +4164,6 @@ def health_check():
             logging.error(f"❌ Global state check failed: {e}")
             checks["global_state"] = False
         
-        # Check filesystem
         try:
             STATE_DIR.mkdir(parents=True, exist_ok=True)
             GLOBAL_DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -4526,7 +4175,6 @@ def health_check():
             logging.error(f"❌ Filesystem check failed: {e}")
             checks["filesystem"] = False
         
-        # Check queue
         queue_size = 0
         queue_usage = 0.0
         queue_unique = 0
@@ -4548,7 +4196,6 @@ def health_check():
             logging.error(f"❌ Queue check failed: {e}")
             checks["queue"] = False
         
-        # Check worker task
         try:
             if _worker_task is not None:
                 checks["worker"] = not _worker_task.done()
@@ -4558,10 +4205,8 @@ def health_check():
             logging.error(f"❌ Worker check failed: {e}")
             checks["worker"] = False
         
-        # Check Telegram API
         checks["telegram_api"] = True
         
-        # Determine overall status
         passed_checks = sum(1 for v in checks.values() if v)
         total_checks = len(checks)
         
@@ -4575,7 +4220,6 @@ def health_check():
             status = "down"
             http_code = 503
         
-        # Calculate daily remaining
         daily_remaining = max(0, DAILY_LIMIT - daily_count)
         daily_pct = (
             (daily_count / DAILY_LIMIT * 100) 
@@ -4588,32 +4232,26 @@ def health_check():
             "checks": checks,
             "checks_passed": f"{passed_checks}/{total_checks}",
             "bot_name": BOT_NAME,
-            # ✅ QUEUE DATA
             "queue_size": queue_size,
             "queue_usage": round(queue_usage, 1),
             "queue_unique": queue_unique,
             "max_queue_size": MAX_QUEUE_SIZE,
-            # ✅ DAILY DATA
             "daily_count": daily_count,
             "daily_limit": DAILY_LIMIT,
             "daily_pct": round(daily_pct, 1),
             "daily_remaining": daily_remaining,
-            # ✅ GLOBAL SENT DATA
             "total_sent_global": global_entries,
             "global_files": global_files,
             "reload_age": reload_age,
-            # ✅ WORKER DATA
             "worker_status": (
                 "paused" if is_paused else
                 ("sending" if is_sending else "idle")
             ),
             "is_paused": is_paused,
             "is_sending": is_sending,
-            # ✅ FLOOD DATA
             "flood_count": flood_ctrl.flood_count if flood_ctrl else 0,
             "flood_penalty": float(flood_ctrl.penalty) if flood_ctrl else 0.0,
             "total_floods": flood_ctrl.total_flood if flood_ctrl else 0,
-            # ✅ UPTIME DATA
             "uptime_seconds": int(uptime.total_seconds()),
             "uptime_formatted": (
                 f"{int(uptime.total_seconds() // 3600)}h "
@@ -4635,358 +4273,135 @@ def health_check():
         }), 500
 
 
-# ============================================================
-# === ADMIN AUTHENTICATION ===
-# ============================================================
-ADMIN_CODE = os.getenv("ADMIN_CODE")
-if not ADMIN_CODE:
-    raise ValueError(
-        "❌ ADMIN_CODE harus diatur di .env file!\n"
-        "Contoh: ADMIN_CODE=your_secure_code_here"
-    )
-
-if len(ADMIN_CODE) < 6:
-    raise ValueError(
-        "❌ ADMIN_CODE terlalu pendek (minimal 6 karakter)"
-    )
-
-ADMIN_SESSIONS: Dict[str, float] = {}
-ADMIN_SESSION_TIMEOUT = 3600
-ADMIN_SESSIONS_LOCK = threading.Lock()
-
-logging.info(f"🔐 [ADMIN] Admin code validation passed (length: {len(ADMIN_CODE)})")
-
-def generate_session_id() -> str:
-    """Generate random session ID"""
-    import secrets
-    return secrets.token_hex(16)
-
-def verify_admin_code(code: str) -> bool:
-    """Verify admin code"""
-    return code == ADMIN_CODE
-
-def create_admin_session() -> str:
-    """Create new admin session"""
-    session_id = generate_session_id()
-    with ADMIN_SESSIONS_LOCK:
-        ADMIN_SESSIONS[session_id] = time.time()
-    logging.info(f"🔐 [ADMIN] Session created: {session_id[:8]}...")
-    return session_id
-
-def verify_admin_session(session_id: str) -> bool:
-    """Verify admin session dengan auto-cleanup"""
-    cleanup_expired_sessions()
-    
-    with ADMIN_SESSIONS_LOCK:
-        if session_id not in ADMIN_SESSIONS:
-            return False
-        
-        session_time = ADMIN_SESSIONS[session_id]
-        now = time.time()
-        
-        if now - session_time > ADMIN_SESSION_TIMEOUT:
-            del ADMIN_SESSIONS[session_id]
-            logging.warning(f"⚠️ [ADMIN] Session expired: {session_id[:8]}...")
-            return False
-        
-        ADMIN_SESSIONS[session_id] = now
-        return True
-
-def cleanup_expired_sessions():
-    """Cleanup expired sessions"""
-    now = time.time()
-    expired = []
-
-    with ADMIN_SESSIONS_LOCK:
-        for sid in list(ADMIN_SESSIONS.keys()):
-            ts = ADMIN_SESSIONS[sid]
-            if now - ts > ADMIN_SESSION_TIMEOUT:
-                expired.append(sid)
-                del ADMIN_SESSIONS[sid]
-    
-    if expired:
-        logging.info(
-            f"🧹 [ADMIN] Cleaned {len(expired)} expired sessions | "
-            f"Active sessions: {len(ADMIN_SESSIONS)}"
-        )
-    
-    if len(ADMIN_SESSIONS) > 100:
-        logging.warning(
-            f"⚠️ [ADMIN] Banyak active sessions: {len(ADMIN_SESSIONS)}"
-        )
-
-
-# ============================================================
-# === ADMIN API ENDPOINTS ===
-# ============================================================
-@flask_app.route('/admin/login', methods=['POST'])
-def admin_login():
-    """Admin login endpoint"""
+@flask_app.route('/admin/config', methods=['GET'])
+def admin_config():
+    """Get current bot configuration dengan flood info - FIXED & COMPLETE"""
     try:
-        data = request.get_json()
-        code = data.get("code", "")
+        now = datetime.now(timezone.utc)
         
-        if not verify_admin_code(code):
-            logging.warning(f"⚠️ [ADMIN] Invalid code attempt")
-            return jsonify({"success": False, "message": "Invalid code"}), 401
+        bot_info = {
+            "bot_name": BOT_NAME,
+            "version": "5.9",
+            "environment": "production",
+            "status": "⏸️ Paused" if is_paused else ("🔄 Sending" if is_sending else "✅ Idle"),
+            "uptime_seconds": int((now - start_time).total_seconds()),
+        }
         
-        session_id = create_admin_session()
-        logging.info(f"✅ [ADMIN] Login successful")
+        rate_limiting = {
+            "delay_send": DELAY_BETWEEN_SEND,
+            "delay_display": f"{DELAY_BETWEEN_SEND}s",
+            "delay_random_min": DELAY_RANDOM_MIN,
+            "delay_random_max": DELAY_RANDOM_MAX,
+            "delay_random_display": f"{DELAY_RANDOM_MIN}s - {DELAY_RANDOM_MAX}s",
+            "group_size": GROUP_SIZE,
+            "group_size_display": f"{GROUP_SIZE} media",
+            "group_delay_min": DELAY_BETWEEN_GROUP_MIN,
+            "group_delay_max": DELAY_BETWEEN_GROUP_MAX,
+            "group_delay_display": f"{DELAY_BETWEEN_GROUP_MIN}s - {DELAY_BETWEEN_GROUP_MAX}s",
+            "batch_pause_every": BATCH_PAUSE_EVERY,
+            "batch_pause_every_display": f"Every {BATCH_PAUSE_EVERY} media",
+            "batch_pause_min": BATCH_PAUSE_MIN,
+            "batch_pause_max": BATCH_PAUSE_MAX,
+            "batch_pause_display": f"{BATCH_PAUSE_MIN}s - {BATCH_PAUSE_MAX}s",
+        }
+        
+        daily_quota = {
+            "current": daily_count,
+            "limit": DAILY_LIMIT,
+            "percentage": (daily_count / DAILY_LIMIT * 100) if DAILY_LIMIT > 0 else 0,
+            "remaining": max(0, DAILY_LIMIT - daily_count),
+            "reset_date": daily_reset_date.isoformat(),
+        }
+        
+        queue_status = {
+            "pending": pending_queue.qsize() if pending_queue else 0,
+            "max_size": MAX_QUEUE_SIZE,
+            "usage_percentage": (
+                (pending_queue.qsize() / MAX_QUEUE_SIZE * 100)
+                if pending_queue and MAX_QUEUE_SIZE > 0 else 0
+            ),
+            "unique_items": queue_deduplicator.get_queue_size() if queue_deduplicator else 0,
+            "deduplication": "enabled" if queue_deduplicator else "disabled",
+        }
+
+        global_info = global_sent_manager.get_info()
+        global_sent = {
+            "total_entries": global_info["total_entries"],
+            "total_files": global_info["total_files"],
+            "current_file": global_info["current_file"],
+            "current_count": global_info["current_count"],
+            "max_per_file": global_info["max_per_file"],
+            "last_reload": global_info["last_reload"],
+            "reload_age": global_info["reload_age"],
+        }
+        
+        recovery_progress = (
+            flood_ctrl.get_recovery_progress() if flood_ctrl else {}
+        )
+        
+        flood_control = {
+            "count": flood_ctrl.flood_count if flood_ctrl else 0,
+            "total": flood_ctrl.total_flood if flood_ctrl else 0,
+            "penalty": float(flood_ctrl.penalty) if flood_ctrl else 0.0,
+            "penalty_display": f"{flood_ctrl.penalty:.0f}s" if flood_ctrl else "0s",
+            "is_cooling": flood_ctrl.is_cooling if flood_ctrl else False,
+            "status": flood_ctrl.get_status() if flood_ctrl else "Normal",
+            "recovery": recovery_progress,
+            "in_recovery": recovery_progress.get("in_recovery", False),
+            "recovery_progress_pct": recovery_progress.get("progress_pct", 100.0),
+            "recovery_elapsed": recovery_progress.get("elapsed_time", 0.0),
+            "recovery_remaining": recovery_progress.get("estimated_remaining", 0.0),
+        }
+        
+        worker_status = {
+            "is_paused": is_paused,
+            "is_sending": is_sending,
+            "status": "⏸️ Paused" if is_paused else ("🔄 Sending" if is_sending else "✅ Idle"),
+            "status_simple": "paused" if is_paused else ("sending" if is_sending else "idle"),
+        }
+        
+        system_config = {
+            "timeout": TIMEOUT,
+            "max_retries": MAX_RETRIES,
+            "auto_save_interval": AUTO_SAVE_INTERVAL,
+            "allowed_media_types": list(sorted(ALLOWED_MEDIA_TYPES)),
+            "media_types_count": len(ALLOWED_MEDIA_TYPES),
+        }
+        
+        admin_config_data = {
+            "admin_code_set": bool(ADMIN_CODE),
+            "session_timeout": ADMIN_SESSION_TIMEOUT,
+            "active_sessions": len(ADMIN_SESSIONS),
+        }
         
         return jsonify({
             "success": True,
-            "session_id": session_id,
-            "message": "Login successful"
+            "config": {
+                "bot_info": bot_info,
+                "rate_limiting": rate_limiting,
+                "daily_quota": daily_quota,
+                "queue_status": queue_status,
+                "global_sent": global_sent,
+                "flood_control": flood_control,
+                "worker_status": worker_status,
+                "system_config": system_config,
+                "admin_config": admin_config_data,
+            },
+            "timestamp": now.isoformat()
         }), 200
     
     except Exception as e:
-        logging.error(f"❌ Error di admin_login: {e}")
-        return jsonify({"success": False, "message": str(e)}), 500
-
-
-@flask_app.route('/admin/verify', methods=['POST'])
-def admin_verify():
-    """Verify admin session"""
-    try:
-        data = request.get_json()
-        session_id = data.get("session_id", "")
-        
-        if not verify_admin_session(session_id):
-            return jsonify({"success": False, "message": "Invalid session"}), 401
-        
-        return jsonify({"success": True, "message": "Session valid"}), 200
-    
-    except Exception as e:
-        logging.error(f"❌ Error di admin_verify: {e}")
-        return jsonify({"success": False, "message": str(e)}), 500
-
-
-@flask_app.route('/admin/applypreset', methods=['POST'])
-def admin_applypreset():
-    """Apply preset via queue"""
-    try:
-        data = request.get_json()
-        session_id = data.get("session_id", "")
-        preset_name = data.get("preset", "").lower()
-        
-        if not verify_admin_session(session_id):
-            return jsonify({"success": False, "message": "Invalid session"}), 401
-        
-        valid_presets = ["fast", "balanced", "safe", "stealth"]
-        if preset_name not in valid_presets:
-            return jsonify({
-                "success": False,
-                "message": f"Invalid preset. Choose from: {', '.join(valid_presets)}"
-            }), 400
-        
-        # Queue command
-        try:
-            admin_command_queue.put_nowait({
-                "type": "apply_preset",
-                "data": {"preset": preset_name},
-                "id": str(time.time())
-            })
-            
-            logging.info(f"📨 [ADMIN] Queued preset command: {preset_name}")
-            
-            return jsonify({
-                "success": True,
-                "message": f"Preset '{preset_name}' queued for application"
-            }), 200
-        
-        except stdlib_queue.Full:
-            return jsonify({
-                "success": False,
-                "message": "Command queue full, try again later"
-            }), 503
-    
-    except Exception as e:
-        logging.error(f"❌ Error di admin_applypreset: {e}")
-        return jsonify({"success": False, "message": str(e)}), 500
-
-
-@flask_app.route('/admin/pause', methods=['POST'])
-def admin_pause():
-    """Pause worker via queue"""
-    try:
-        data = request.get_json()
-        session_id = data.get("session_id", "")
-        
-        if not verify_admin_session(session_id):
-            return jsonify({"success": False, "message": "Invalid session"}), 401
-        
-        try:
-            admin_command_queue.put_nowait({
-                "type": "pause_worker",
-                "data": {},
-                "id": str(time.time())
-            })
-            
-            logging.info(f"📨 [ADMIN] Queued pause command")
-            
-            return jsonify({
-                "success": True,
-                "message": "Worker pause queued"
-            }), 200
-        
-        except stdlib_queue.Full:
-            return jsonify({
-                "success": False,
-                "message": "Command queue full"
-            }), 503
-    
-    except Exception as e:
-        logging.error(f"❌ Error di admin_pause: {e}")
-        return jsonify({"success": False, "message": str(e)}), 500
-
-
-@flask_app.route('/admin/resume', methods=['POST'])
-def admin_resume():
-    """Resume worker via queue"""
-    try:
-        data = request.get_json()
-        session_id = data.get("session_id", "")
-        
-        if not verify_admin_session(session_id):
-            return jsonify({"success": False, "message": "Invalid session"}), 401
-        
-        try:
-            admin_command_queue.put_nowait({
-                "type": "resume_worker",
-                "data": {},
-                "id": str(time.time())
-            })
-            
-            logging.info(f"📨 [ADMIN] Queued resume command")
-            
-            return jsonify({
-                "success": True,
-                "message": "Worker resume queued"
-            }), 200
-        
-        except stdlib_queue.Full:
-            return jsonify({
-                "success": False,
-                "message": "Command queue full"
-            }), 503
-    
-    except Exception as e:
-        logging.error(f"❌ Error di admin_resume: {e}")
-        return jsonify({"success": False, "message": str(e)}), 500
-
-
-@flask_app.route('/admin/resetdaily', methods=['POST'])
-def admin_resetdaily():
-    """Reset daily counter via queue"""
-    try:
-        data = request.get_json()
-        session_id = data.get("session_id", "")
-        
-        if not verify_admin_session(session_id):
-            return jsonify({"success": False, "message": "Invalid session"}), 401
-        
-        try:
-            admin_command_queue.put_nowait({
-                "type": "reset_daily",
-                "data": {},
-                "id": str(time.time())
-            })
-            
-            logging.info(f"📨 [ADMIN] Queued reset daily command")
-            
-            return jsonify({
-                "success": True,
-                "message": "Daily counter reset queued"
-            }), 200
-        
-        except stdlib_queue.Full:
-            return jsonify({
-                "success": False,
-                "message": "Command queue full"
-            }), 503
-    
-    except Exception as e:
-        logging.error(f"❌ Error di admin_resetdaily: {e}")
-        return jsonify({"success": False, "message": str(e)}), 500
-
-
-@flask_app.route('/admin/flushqueue', methods=['POST'])
-def admin_flushqueue():
-    """Flush queue via queue"""
-    try:
-        data = request.get_json()
-        session_id = data.get("session_id", "")
-        
-        if not verify_admin_session(session_id):
-            return jsonify({"success": False, "message": "Invalid session"}), 401
-        
-        try:
-            admin_command_queue.put_nowait({
-                "type": "flush_queue",
-                "data": {},
-                "id": str(time.time())
-            })
-            
-            logging.info(f"📨 [ADMIN] Queued flush queue command")
-            
-            return jsonify({
-                "success": True,
-                "message": "Queue flush queued"
-            }), 200
-        
-        except stdlib_queue.Full:
-            return jsonify({
-                "success": False,
-                "message": "Command queue full"
-            }), 503
-    
-    except Exception as e:
-        logging.error(f"❌ Error di admin_flushqueue: {e}")
-        return jsonify({"success": False, "message": str(e)}), 500
-
-
-@flask_app.route('/admin/restart', methods=['POST'])
-def admin_restart():
-    """Restart bot via queue"""
-    try:
-        data = request.get_json()
-        session_id = data.get("session_id", "")
-        
-        if not verify_admin_session(session_id):
-            return jsonify({"success": False, "message": "Invalid session"}), 401
-        
-        try:
-            admin_command_queue.put_nowait({
-                "type": "restart_bot",
-                "data": {},
-                "id": str(time.time())
-            })
-            
-            logging.info(f"📨 [ADMIN] Queued restart command")
-            
-            return jsonify({
-                "success": True,
-                "message": "Bot restart queued, please wait 15-30 seconds"
-            }), 200
-        
-        except stdlib_queue.Full:
-            return jsonify({
-                "success": False,
-                "message": "Command queue full"
-            }), 503
-    
-    except Exception as e:
-        logging.error(f"❌ Error di admin_restart: {e}")
-        return jsonify({"success": False, "message": str(e)}), 500
+        logging.error(f"❌ Error di admin_config: {e}")
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
 
 
 @flask_app.route('/dashboard', methods=['GET'])
 def dashboard():
     """Web dashboard dengan admin panel"""
     try:
-        session_id = request.cookies.get('admin_session')
-        is_admin = verify_admin_session(session_id) if session_id else False
-        
         now = datetime.now(timezone.utc)
         uptime = now - start_time
         hours, remainder = divmod(int(uptime.total_seconds()), 3600)
@@ -5029,7 +4444,6 @@ def dashboard():
             total_floods=flood_ctrl.total_flood if flood_ctrl else 0,
             flood_penalty=f"{flood_ctrl.penalty:.0f}" if flood_ctrl else "0",
             timestamp=now.strftime('%Y-%m-%d %H:%M:%S'),
-            is_admin=is_admin
         )
     
     except Exception as e:
@@ -5037,9 +4451,339 @@ def dashboard():
         return f"❌ Error: {e}", 500
 
 
+# ============================================================
+# === ADMIN AUTHENTICATION ===
+# ============================================================
+ADMIN_CODE = os.getenv("ADMIN_CODE")
+if not ADMIN_CODE:
+    raise ValueError(
+        "❌ ADMIN_CODE harus diatur di .env file!\n"
+        "Contoh: ADMIN_CODE=your_secure_code_here"
+    )
+
+if len(ADMIN_CODE) < 6:
+    raise ValueError(
+        "❌ ADMIN_CODE terlalu pendek (minimal 6 karakter)"
+    )
+
+ADMIN_SESSIONS: Dict[str, float] = {}
+ADMIN_SESSION_TIMEOUT = 3600
+ADMIN_SESSIONS_LOCK = threading.Lock()
+
+logging.info(f"🔐 [ADMIN] Admin code validation passed (length: {len(ADMIN_CODE)})")
+
+def generate_session_id() -> str:
+    import secrets
+    return secrets.token_hex(16)
+
+def verify_admin_code(code: str) -> bool:
+    return code == ADMIN_CODE
+
+def create_admin_session() -> str:
+    session_id = generate_session_id()
+    with ADMIN_SESSIONS_LOCK:
+        ADMIN_SESSIONS[session_id] = time.time()
+    logging.info(f"🔐 [ADMIN] Session created: {session_id[:8]}...")
+    return session_id
+
+def verify_admin_session(session_id: str) -> bool:
+    cleanup_expired_sessions()
+    
+    with ADMIN_SESSIONS_LOCK:
+        if session_id not in ADMIN_SESSIONS:
+            return False
+        
+        session_time = ADMIN_SESSIONS[session_id]
+        now = time.time()
+        
+        if now - session_time > ADMIN_SESSION_TIMEOUT:
+            del ADMIN_SESSIONS[session_id]
+            logging.warning(f"⚠️ [ADMIN] Session expired: {session_id[:8]}...")
+            return False
+        
+        ADMIN_SESSIONS[session_id] = now
+        return True
+
+def cleanup_expired_sessions():
+    now = time.time()
+    expired = []
+
+    with ADMIN_SESSIONS_LOCK:
+        for sid in list(ADMIN_SESSIONS.keys()):
+            ts = ADMIN_SESSIONS[sid]
+            if now - ts > ADMIN_SESSION_TIMEOUT:
+                expired.append(sid)
+                del ADMIN_SESSIONS[sid]
+    
+    if expired:
+        logging.info(
+            f"🧹 [ADMIN] Cleaned {len(expired)} expired sessions | "
+            f"Active sessions: {len(ADMIN_SESSIONS)}"
+        )
+    
+    if len(ADMIN_SESSIONS) > 100:
+        logging.warning(
+            f"⚠️ [ADMIN] Banyak active sessions: {len(ADMIN_SESSIONS)}"
+        )
+
+
+# ============================================================
+# === ADMIN API ENDPOINTS ===
+# ============================================================
+@flask_app.route('/admin/login', methods=['POST'])
+def admin_login():
+    try:
+        data = request.get_json()
+        code = data.get("code", "")
+        
+        if not verify_admin_code(code):
+            logging.warning(f"⚠️ [ADMIN] Invalid code attempt")
+            return jsonify({"success": False, "message": "Invalid code"}), 401
+        
+        session_id = create_admin_session()
+        logging.info(f"✅ [ADMIN] Login successful")
+        
+        return jsonify({
+            "success": True,
+            "session_id": session_id,
+            "message": "Login successful"
+        }), 200
+    
+    except Exception as e:
+        logging.error(f"❌ Error di admin_login: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@flask_app.route('/admin/verify', methods=['POST'])
+def admin_verify():
+    try:
+        data = request.get_json()
+        session_id = data.get("session_id", "")
+        
+        if not verify_admin_session(session_id):
+            return jsonify({"success": False, "message": "Invalid session"}), 401
+        
+        return jsonify({"success": True, "message": "Session valid"}), 200
+    
+    except Exception as e:
+        logging.error(f"❌ Error di admin_verify: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@flask_app.route('/admin/applypreset', methods=['POST'])
+def admin_applypreset():
+    try:
+        data = request.get_json()
+        session_id = data.get("session_id", "")
+        preset_name = data.get("preset", "").lower()
+        
+        if not verify_admin_session(session_id):
+            return jsonify({"success": False, "message": "Invalid session"}), 401
+        
+        valid_presets = ["fast", "balanced", "safe", "stealth"]
+        if preset_name not in valid_presets:
+            return jsonify({
+                "success": False,
+                "message": f"Invalid preset. Choose from: {', '.join(valid_presets)}"
+            }), 400
+        
+        try:
+            admin_command_queue.put_nowait({
+                "type": "apply_preset",
+                "data": {"preset": preset_name},
+                "id": str(time.time())
+            })
+            
+            logging.info(f"📨 [ADMIN] Queued preset command: {preset_name}")
+            
+            return jsonify({
+                "success": True,
+                "message": f"Preset '{preset_name}' queued for application"
+            }), 200
+        
+        except stdlib_queue.Full:
+            return jsonify({
+                "success": False,
+                "message": "Command queue full, try again later"
+            }), 503
+    
+    except Exception as e:
+        logging.error(f"❌ Error di admin_applypreset: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@flask_app.route('/admin/pause', methods=['POST'])
+def admin_pause():
+    try:
+        data = request.get_json()
+        session_id = data.get("session_id", "")
+        
+        if not verify_admin_session(session_id):
+            return jsonify({"success": False, "message": "Invalid session"}), 401
+        
+        try:
+            admin_command_queue.put_nowait({
+                "type": "pause_worker",
+                "data": {},
+                "id": str(time.time())
+            })
+            
+            logging.info(f"📨 [ADMIN] Queued pause command")
+            
+            return jsonify({
+                "success": True,
+                "message": "Worker pause queued"
+            }), 200
+        
+        except stdlib_queue.Full:
+            return jsonify({
+                "success": False,
+                "message": "Command queue full"
+            }), 503
+    
+    except Exception as e:
+        logging.error(f"❌ Error di admin_pause: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@flask_app.route('/admin/resume', methods=['POST'])
+def admin_resume():
+    try:
+        data = request.get_json()
+        session_id = data.get("session_id", "")
+        
+        if not verify_admin_session(session_id):
+            return jsonify({"success": False, "message": "Invalid session"}), 401
+        
+        try:
+            admin_command_queue.put_nowait({
+                "type": "resume_worker",
+                "data": {},
+                "id": str(time.time())
+            })
+            
+            logging.info(f"📨 [ADMIN] Queued resume command")
+            
+            return jsonify({
+                "success": True,
+                "message": "Worker resume queued"
+            }), 200
+        
+        except stdlib_queue.Full:
+            return jsonify({
+                "success": False,
+                "message": "Command queue full"
+            }), 503
+    
+    except Exception as e:
+        logging.error(f"❌ Error di admin_resume: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@flask_app.route('/admin/resetdaily', methods=['POST'])
+def admin_resetdaily():
+    try:
+        data = request.get_json()
+        session_id = data.get("session_id", "")
+        
+        if not verify_admin_session(session_id):
+            return jsonify({"success": False, "message": "Invalid session"}), 401
+        
+        try:
+            admin_command_queue.put_nowait({
+                "type": "reset_daily",
+                "data": {},
+                "id": str(time.time())
+            })
+            
+            logging.info(f"📨 [ADMIN] Queued reset daily command")
+            
+            return jsonify({
+                "success": True,
+                "message": "Daily counter reset queued"
+            }), 200
+        
+        except stdlib_queue.Full:
+            return jsonify({
+                "success": False,
+                "message": "Command queue full"
+            }), 503
+    
+    except Exception as e:
+        logging.error(f"❌ Error di admin_resetdaily: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@flask_app.route('/admin/flushqueue', methods=['POST'])
+def admin_flushqueue():
+    try:
+        data = request.get_json()
+        session_id = data.get("session_id", "")
+        
+        if not verify_admin_session(session_id):
+            return jsonify({"success": False, "message": "Invalid session"}), 401
+        
+        try:
+            admin_command_queue.put_nowait({
+                "type": "flush_queue",
+                "data": {},
+                "id": str(time.time())
+            })
+            
+            logging.info(f"📨 [ADMIN] Queued flush queue command")
+            
+            return jsonify({
+                "success": True,
+                "message": "Queue flush queued"
+            }), 200
+        
+        except stdlib_queue.Full:
+            return jsonify({
+                "success": False,
+                "message": "Command queue full"
+            }), 503
+    
+    except Exception as e:
+        logging.error(f"❌ Error di admin_flushqueue: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@flask_app.route('/admin/restart', methods=['POST'])
+def admin_restart():
+    try:
+        data = request.get_json()
+        session_id = data.get("session_id", "")
+        
+        if not verify_admin_session(session_id):
+            return jsonify({"success": False, "message": "Invalid session"}), 401
+        
+        try:
+            admin_command_queue.put_nowait({
+                "type": "restart_bot",
+                "data": {},
+                "id": str(time.time())
+            })
+            
+            logging.info(f"📨 [ADMIN] Queued restart command")
+            
+            return jsonify({
+                "success": True,
+                "message": "Bot restart queued, please wait 15-30 seconds"
+            }), 200
+        
+        except stdlib_queue.Full:
+            return jsonify({
+                "success": False,
+                "message": "Command queue full"
+            }), 503
+    
+    except Exception as e:
+        logging.error(f"❌ Error di admin_restart: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
 @flask_app.route('/admin/metrics', methods=['GET'])
 def admin_metrics():
-    """Metrics endpoint untuk monitoring"""
     try:
         now = datetime.now(timezone.utc)
         uptime = now - start_time
@@ -5108,281 +4852,7 @@ def admin_metrics():
         }), 500
 
 
-@flask_app.route('/admin/config', methods=['GET'])
-def admin_config():
-    """Get current bot configuration dengan flood info"""
-    try:
-        now = datetime.now(timezone.utc)
-        
-        # ✅ BOT INFO
-        bot_info = {
-            "bot_name": BOT_NAME,
-            "version": "5.9",
-            "environment": "production",
-            "status": "⏸️ Paused" if is_paused else ("🔄 Sending" if is_sending else "✅ Idle"),
-            "uptime_seconds": int((now - start_time).total_seconds()),
-        }
-        
-        # ✅ RATE LIMITING - Format untuk display
-        rate_limiting = {
-            "delay_send": DELAY_BETWEEN_SEND,
-            "delay_display": f"{DELAY_BETWEEN_SEND}s",
-            "delay_random_min": DELAY_RANDOM_MIN,
-            "delay_random_max": DELAY_RANDOM_MAX,
-            "delay_random_display": f"{DELAY_RANDOM_MIN}s - {DELAY_RANDOM_MAX}s",
-            "group_size": GROUP_SIZE,
-            "group_size_display": f"{GROUP_SIZE} media",
-            "group_delay_min": DELAY_BETWEEN_GROUP_MIN,
-            "group_delay_max": DELAY_BETWEEN_GROUP_MAX,
-            "group_delay_display": f"{DELAY_BETWEEN_GROUP_MIN}s - {DELAY_BETWEEN_GROUP_MAX}s",
-            "batch_pause_every": BATCH_PAUSE_EVERY,
-            "batch_pause_every_display": f"Every {BATCH_PAUSE_EVERY} media",
-            "batch_pause_min": BATCH_PAUSE_MIN,
-            "batch_pause_max": BATCH_PAUSE_MAX,
-            "batch_pause_display": f"{BATCH_PAUSE_MIN}s - {BATCH_PAUSE_MAX}s",
-        }
-        
-        # ✅ DAILY QUOTA
-        daily_quota = {
-            "current": daily_count,
-            "limit": DAILY_LIMIT,
-            "percentage": (daily_count / DAILY_LIMIT * 100) if DAILY_LIMIT > 0 else 0,
-            "remaining": max(0, DAILY_LIMIT - daily_count),
-            "reset_date": daily_reset_date.isoformat(),
-        }
-        
-        # ✅ QUEUE STATUS
-        queue_status = {
-            "pending": pending_queue.qsize() if pending_queue else 0,
-            "max_size": MAX_QUEUE_SIZE,
-            "usage_percentage": (
-                (pending_queue.qsize() / MAX_QUEUE_SIZE * 100)
-                if pending_queue and MAX_QUEUE_SIZE > 0 else 0
-            ),
-            "unique_items": queue_deduplicator.get_queue_size() if queue_deduplicator else 0,
-            "deduplication": "enabled" if queue_deduplicator else "disabled",
-        }
-
-        # ✅ NEW: Flood control dengan recovery progress
-        recovery_progress = (
-            flood_ctrl.get_recovery_progress() if flood_ctrl else {}
-        )
-        
-        flood_control = {
-            "count": flood_ctrl.flood_count if flood_ctrl else 0,
-            "total": flood_ctrl.total_flood if flood_ctrl else 0,
-            "penalty": float(flood_ctrl.penalty) if flood_ctrl else 0.0,
-            "penalty_display": f"{flood_ctrl.penalty:.0f}s" if flood_ctrl else "0s",
-            "is_cooling": flood_ctrl.is_cooling if flood_ctrl else False,
-            "status": flood_ctrl.get_status() if flood_ctrl else "Normal",
-            # ✅ NEW: Recovery progress
-            "recovery": recovery_progress,
-            "in_recovery": recovery_progress.get("in_recovery", False),
-            "recovery_progress_pct": recovery_progress.get("progress_pct", 100.0),
-            "recovery_elapsed": recovery_progress.get("elapsed_time", 0.0),
-            "recovery_remaining": recovery_progress.get("estimated_remaining", 0.0),
-        }
-        
-        return jsonify({
-            "success": True,
-            "config": {
-                "bot_info": bot_info,
-                "rate_limiting": rate_limiting,
-                "daily_quota": daily_quota,
-                "queue_status": queue_status,
-                "global_sent": global_sent,
-                "flood_control": flood_control,
-                "worker_status": worker_status,
-                "system_config": system_config,
-                "admin_config": admin_config_data,
-            },
-            "timestamp": now.isoformat()
-        }), 200
-    
-  #  except Exception as e:
-  #      logging.error(f"❌ Error di admin_config: {e}")
-  #      return jsonify({
-  #          "success": False,
-  #          "message": str(e)
-  #      }), 500
-
-
-        # ✅ GLOBAL SENT
-        global_info = global_sent_manager.get_info()
-        global_sent = {
-            "total_entries": global_info["total_entries"],
-            "total_files": global_info["total_files"],
-            "current_file": global_info["current_file"],
-            "current_count": global_info["current_count"],
-            "max_per_file": global_info["max_per_file"],
-            "last_reload": global_info["last_reload"],
-            "reload_age": global_info["reload_age"],
-        }
-        
-        # ✅ FLOOD CONTROL
-        flood_control = {
-            "count": flood_ctrl.flood_count if flood_ctrl else 0,
-            "total": flood_ctrl.total_flood if flood_ctrl else 0,
-            "penalty": float(flood_ctrl.penalty) if flood_ctrl else 0.0,
-            "penalty_display": f"{flood_ctrl.penalty:.0f}s" if flood_ctrl else "0s",
-            "is_cooling": flood_ctrl.is_cooling if flood_ctrl else False,
-            "status": flood_ctrl.get_status() if flood_ctrl else "Normal",
-        }
-        
-        # ✅ WORKER STATUS
-        worker_status = {
-            "is_paused": is_paused,
-            "is_sending": is_sending,
-            "status": "⏸️ Paused" if is_paused else ("🔄 Sending" if is_sending else "✅ Idle"),
-            "status_simple": "paused" if is_paused else ("sending" if is_sending else "idle"),
-        }
-        
-        # ✅ SYSTEM CONFIG
-        system_config = {
-            "timeout": TIMEOUT,
-            "max_retries": MAX_RETRIES,
-            "auto_save_interval": AUTO_SAVE_INTERVAL,
-            "allowed_media_types": list(sorted(ALLOWED_MEDIA_TYPES)),
-            "media_types_count": len(ALLOWED_MEDIA_TYPES),
-        }
-        
-        # ✅ ADMIN CONFIG
-        admin_config_data = {
-            "admin_code_set": bool(ADMIN_CODE),
-            "session_timeout": ADMIN_SESSION_TIMEOUT,
-            "active_sessions": len(ADMIN_SESSIONS),
-        }
-        
-        return jsonify({
-            "success": True,
-            "config": {
-                "bot_info": bot_info,
-                "rate_limiting": rate_limiting,
-                "daily_quota": daily_quota,
-                "queue_status": queue_status,
-                "global_sent": global_sent,
-                "flood_control": flood_control,
-                "worker_status": worker_status,
-                "system_config": system_config,
-                "admin_config": admin_config_data,
-            },
-            "timestamp": now.isoformat()
-        }), 200
-    
-    except Exception as e:
-        logging.error(f"❌ Error di admin_config: {e}")
-        return jsonify({
-            "success": False,
-            "message": str(e)
-        }), 500
-
-
-@flask_app.route('/admin/flood-history', methods=['GET'])
-def admin_flood_history():
-    """Get flood event history"""
-    try:
-        session_id = request.args.get('session_id', '')
-        
-        if not verify_admin_session(session_id):
-            return jsonify({
-                "success": False,
-                "message": "Invalid session"
-            }), 401
-        
-        if not flood_event_logger:
-            return jsonify({
-                "success": False,
-                "message": "Flood event logger not available"
-            }), 503
-        
-        # Run async operations in sync context
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        recent_events = loop.run_until_complete(
-            flood_event_logger.get_recent_events(limit=50)
-        )
-        flood_stats = loop.run_until_complete(
-            flood_event_logger.get_flood_stats()
-        )
-        
-        return jsonify({
-            "success": True,
-            "events": recent_events,
-            "stats": flood_stats,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }), 200
-    
-    except Exception as e:
-        logging.error(f"❌ Error di admin_flood_history: {e}")
-        return jsonify({
-            "success": False,
-            "message": str(e)
-        }), 500
-
-
-@flask_app.route('/admin/flood-stats', methods=['GET'])
-def admin_flood_stats():
-    """Get flood statistics only"""
-    try:
-        session_id = request.args.get('session_id', '')
-        
-        if not verify_admin_session(session_id):
-            return jsonify({
-                "success": False,
-                "message": "Invalid session"
-            }), 401
-        
-        if not flood_event_logger:
-            return jsonify({
-                "success": False,
-                "message": "Flood event logger not available"
-            }), 503
-        
-        # Run async operation
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        flood_stats = loop.run_until_complete(
-            flood_event_logger.get_flood_stats()
-        )
-        
-        # Add current flood controller status
-        current_status = {
-            "flood_count": flood_ctrl.flood_count if flood_ctrl else 0,
-            "total_flood": flood_ctrl.total_flood if flood_ctrl else 0,
-            "current_penalty": float(flood_ctrl.penalty) if flood_ctrl else 0.0,
-            "is_cooling": flood_ctrl.is_cooling if flood_ctrl else False,
-            "recovery_progress": (
-                flood_ctrl.get_recovery_progress() if flood_ctrl else {}
-            ),
-        }
-        
-        return jsonify({
-            "success": True,
-            "stats": flood_stats,
-            "current_status": current_status,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }), 200
-    
-    except Exception as e:
-        logging.error(f"❌ Error di admin_flood_stats: {e}")
-        return jsonify({
-            "success": False,
-            "message": str(e)
-        }), 500
-
-
 def run_flask():
-    """Run Flask server di thread terpisah dengan graceful shutdown"""
     try:
         def cleanup_task():
             while True:
@@ -5433,14 +4903,11 @@ def run_flask():
 # === ROBUST STATE RECOVERY SYSTEM ===
 # ============================================================
 class RobustStateRecovery:
-    """System recovery yang tahan banting untuk startup/shutdown"""
-    
     def __init__(self, state_dir: Path):
         self.state_dir = state_dir
         self.recovery_log = state_dir / "recovery.log"
     
     def _log_recovery(self, msg: str):
-        """Log recovery events"""
         try:
             with open(self.recovery_log, "a", encoding="utf-8") as f:
                 timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -5449,7 +4916,6 @@ class RobustStateRecovery:
             pass
     
     async def validate_queue_file(self) -> bool:
-        """Validasi queue file integrity"""
         try:
             if not FILE_QUEUE.exists():
                 return True
@@ -5460,7 +4926,6 @@ class RobustStateRecovery:
                     self._log_recovery("❌ Queue file: bukan list")
                     return False
                 
-                # Validate setiap item
                 for i, item in enumerate(data):
                     if not isinstance(item, (list, tuple)):
                         self._log_recovery(f"❌ Queue item {i}: bukan list/tuple")
@@ -5480,7 +4945,6 @@ class RobustStateRecovery:
             return False
     
     async def validate_pending_file(self) -> bool:
-        """Validasi pending file integrity"""
         try:
             if not FILE_PENDING.exists():
                 return True
@@ -5502,10 +4966,8 @@ class RobustStateRecovery:
             return False
     
     async def recover_from_corruption(self):
-        """Recover dari file yang corrupt"""
         self._log_recovery("🔄 Starting corruption recovery...")
         
-        # Check queue file
         queue_valid = await self.validate_queue_file()
         if not queue_valid:
             backup = FILE_QUEUE.with_suffix(".json.backup")
@@ -5520,7 +4982,6 @@ class RobustStateRecovery:
                 FILE_QUEUE.unlink(missing_ok=True)
                 self._log_recovery("🗑️ Corrupt queue file deleted")
         
-        # Check pending file
         pending_valid = await self.validate_pending_file()
         if not pending_valid:
             backup = FILE_PENDING.with_suffix(".json.backup")
@@ -5536,9 +4997,7 @@ class RobustStateRecovery:
                 self._log_recovery("🗑️ Corrupt pending file deleted")
     
     async def cleanup_temp_files(self):
-        """Bersihkan temp files dari crash sebelumnya"""
         try:
-            # Cleanup temp queue files
             for temp_file in self.state_dir.glob("queue.json.tmp*"):
                 try:
                     temp_file.unlink()
@@ -5546,7 +5005,6 @@ class RobustStateRecovery:
                 except Exception:
                     pass
             
-            # Cleanup temp pending files
             for temp_file in self.state_dir.glob("pending.json.tmp*"):
                 try:
                     temp_file.unlink()
@@ -5561,7 +5019,7 @@ state_recovery = RobustStateRecovery(STATE_DIR)
 
 
 # ============================================================
-# === STARTUP & SHUTDOWN (UPDATED) ===
+# === STARTUP & SHUTDOWN ===
 # ============================================================
 async def on_startup(app) -> None:
     """Updated startup dengan flood notification system"""
@@ -5577,16 +5035,14 @@ async def on_startup(app) -> None:
         loop = asyncio.get_event_loop()
         logging.info(f"✅ Event loop verified: {loop}")
         
-        # Setup logging PERTAMA
         setup_logging(BOT_NAME)
         
-        # Print banner
         console_mgr = ConsoleOutputManager(Path("logs") / BOT_NAME / f"main.log")
         console_mgr.print_startup_banner(BOT_NAME)
         console_mgr.print_config_summary()
 
-        sending_lock  = asyncio.Lock()
-        config_lock   = asyncio.Lock()
+        sending_lock = asyncio.Lock()
+        config_lock = asyncio.Lock()
         ratelimit_lock = asyncio.Lock()
         pending_queue = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
         admin_command_queue = stdlib_queue.Queue()
@@ -5594,7 +5050,6 @@ async def on_startup(app) -> None:
         queue_deduplicator = QueueDeduplicator(max_size=10000)
         _shutdown_event = asyncio.Event()
 
-        # Validate Telegram API connection
         console_mgr.print_status_line("Validating Telegram API connection...")
         logging.info(f"🔐 [BOT: {BOT_NAME}] Validating Telegram API connection...")
         try:
@@ -5609,7 +5064,6 @@ async def on_startup(app) -> None:
             startup_errors.append(("Telegram API", str(e)))
             raise ValueError(f"Cannot authenticate with Telegram API: {e}")
 
-        # RECOVERY SYSTEM
         console_mgr.print_status_line("Running recovery system...")
         logging.info(f"🔄 [BOT: {BOT_NAME}] Running recovery system...")
         try:
@@ -5620,7 +5074,6 @@ async def on_startup(app) -> None:
             logging.error(f"❌ [BOT: {BOT_NAME}] Recovery system error: {e}")
             startup_errors.append(("Recovery system", str(e)))
 
-        # Load GLOBAL sent files
         console_mgr.print_status_line("Loading GLOBAL sent files...")
         logging.info(f"📥 [BOT: {BOT_NAME}] Loading GLOBAL sent files...")
         try:
@@ -5636,7 +5089,6 @@ async def on_startup(app) -> None:
                 logging.error(f"❌ [BOT: {BOT_NAME}] Gagal init new sent file: {e2}")
                 startup_errors.append(("Init sent file", str(e2)))
 
-        # ✅ NEW: Initialize flood event logger
         console_mgr.print_status_line("Initializing flood event logger...")
         logging.info(f"📝 [BOT: {BOT_NAME}] Initializing flood event logger...")
         try:
@@ -5648,7 +5100,6 @@ async def on_startup(app) -> None:
             startup_errors.append(("Flood logger", str(e)))
             flood_event_logger = None
         
-        # ✅ NEW: Initialize admin flood notifier
         console_mgr.print_status_line("Initializing admin flood notifier...")
         logging.info(f"📨 [BOT: {BOT_NAME}] Initializing admin flood notifier...")
         try:
@@ -5674,33 +5125,30 @@ async def on_startup(app) -> None:
             startup_errors.append(("Flood notifier", str(e)))
             admin_flood_notifier = None
         
-        # ✅ NEW: Create flood controller WITH notifier
         console_mgr.print_status_line("Creating flood controller...")
         logging.info(f"🔧 [BOT: {BOT_NAME}] Creating flood controller...")
         try:
-            if flood_ctrl is None:
-                flood_ctrl = SmartFloodControllerWithNotifications(
-                    notifier=admin_flood_notifier,
-                    event_logger=flood_event_logger
-                )
-                
-                # Load saved state
-                try:
-                    saved_state = await state_manager.load_flood()
-                    if saved_state:
-                        flood_ctrl = SmartFloodControllerWithNotifications.from_dict(
-                            saved_state,
-                            notifier=admin_flood_notifier,
-                            event_logger=flood_event_logger
-                        )
-                        logging.info(
-                            f"📥 [BOT: {BOT_NAME}] Flood controller restored "
-                            f"from saved state"
-                        )
-                except Exception as e:
-                    logging.warning(
-                        f"⚠️ [BOT: {BOT_NAME}] Gagal load flood state: {e}"
+            flood_ctrl = SmartFloodControllerWithNotifications(
+                notifier=admin_flood_notifier,
+                event_logger=flood_event_logger
+            )
+            
+            try:
+                saved_state = await state_manager.load_flood()
+                if saved_state:
+                    flood_ctrl = SmartFloodControllerWithNotifications.from_dict(
+                        saved_state,
+                        notifier=admin_flood_notifier,
+                        event_logger=flood_event_logger
                     )
+                    logging.info(
+                        f"📥 [BOT: {BOT_NAME}] Flood controller restored "
+                        f"from saved state"
+                    )
+            except Exception as e:
+                logging.warning(
+                    f"⚠️ [BOT: {BOT_NAME}] Gagal load flood state: {e}"
+                )
             
             logging.info(
                 f"✅ [BOT: {BOT_NAME}] Flood controller created"
@@ -5710,8 +5158,8 @@ async def on_startup(app) -> None:
                 f"❌ [BOT: {BOT_NAME}] Gagal create flood controller: {e}"
             )
             startup_errors.append(("Flood controller", str(e)))
+            flood_ctrl = SmartFloodControllerWithNotifications()
 
-        # Load persistent queue
         console_mgr.print_status_line("Loading persistent queue...")
         logging.info(f"📥 [BOT: {BOT_NAME}] Loading persistent queue...")
         try:
@@ -5733,7 +5181,6 @@ async def on_startup(app) -> None:
                 logging.error(f"❌ [BOT: {BOT_NAME}] Queue backup recovery failed: {e2}")
             queue_loaded = 0
 
-        # Load LOCAL state
         console_mgr.print_status_line("Loading LOCAL state...")
         logging.info(f"📥 [BOT: {BOT_NAME}] Loading LOCAL state...")
         try:
@@ -5752,16 +5199,12 @@ async def on_startup(app) -> None:
             except Exception as e2:
                 logging.error(f"❌ [BOT: {BOT_NAME}] LOCAL state recovery failed: {e2}")
 
-        if flood_ctrl is None:
-            flood_ctrl = SmartFloodController()
-
         try:
             await queue_deduplicator.clear_on_startup()
         except Exception as e:
             logging.error(f"❌ [BOT: {BOT_NAME}] Gagal clear deduplicator: {e}")
             startup_errors.append(("Clear deduplicator", str(e)))
 
-        # Start queue worker
         try:
             _worker_task = asyncio.create_task(queue_worker(app.bot))
             console_mgr.print_status_line(f"Queue worker started!")
@@ -5770,7 +5213,6 @@ async def on_startup(app) -> None:
             logging.error(f"❌ [BOT: {BOT_NAME}] Gagal start worker: {e}")
             startup_errors.append(("Worker start", str(e)))
         
-        # Start admin command processor
         try:
             _admin_processor_task = asyncio.create_task(admin_command_processor())
             console_mgr.print_status_line(f"Admin command processor started!")
@@ -5779,13 +5221,9 @@ async def on_startup(app) -> None:
             logging.error(f"❌ [BOT: {BOT_NAME}] Gagal start admin processor: {e}")
             startup_errors.append(("Admin processor", str(e)))
         
-        # Print startup logs
         console_mgr.print_startup_logs()
-        
-        # Print ready message
         console_mgr.print_ready()
         
-        # Report startup errors
         if startup_errors:
             logging.warning(
                 f"⚠️ [BOT: {BOT_NAME}] Startup completed with {len(startup_errors)} error(s):"
@@ -5817,15 +5255,12 @@ async def on_shutdown(app) -> None:
 
     logging.info(f"🛑 [BOT: {BOT_NAME}] Shutdown dimulai...")
 
-    # Set shutdown event PERTAMA
     if _shutdown_event:
         _shutdown_event.set()
         logging.info(f"🛑 [BOT: {BOT_NAME}] Shutdown event set")
 
-    # Beri waktu task yang listen ke _shutdown_event untuk exit sendiri
     await asyncio.sleep(0.5)
 
-    # Cancel semua tracked tasks (delayed_shutdown, dll)
     if _tracked_tasks:
         active = [t for t in _tracked_tasks if not t.done()]
         if active:
@@ -5853,7 +5288,6 @@ async def on_shutdown(app) -> None:
 
         _tracked_tasks.clear()
 
-    # Cancel admin processor task
     if _admin_processor_task and not _admin_processor_task.done():
         print("\n⏹️  Membatalkan admin command processor...")
         logging.info(
@@ -5882,7 +5316,6 @@ async def on_shutdown(app) -> None:
             print(f"   ❌ Error cancel admin processor: {e}")
             logging.error(f"❌ Error cancel admin processor: {e}")
 
-    # Cancel worker task
     if _worker_task and not _worker_task.done():
         print("\n⏹️  Membatalkan queue worker...")
         logging.info(
@@ -5911,7 +5344,6 @@ async def on_shutdown(app) -> None:
             print(f"   ❌ Error cancel worker: {e}")
             logging.error(f"❌ Error cancel worker: {e}")
 
-    # SAVE QUEUE dengan multiple retries
     print("\n💾 Saving queue...")
     logging.info(f"💾 [BOT: {BOT_NAME}] Saving queue...")
     queue_saved = False
@@ -5938,7 +5370,6 @@ async def on_shutdown(app) -> None:
             f"❌ [BOT: {BOT_NAME}] Queue save failed after 5 attempts"
         )
 
-    # save semua state
     print("\n💾 Final save semua data...")
     logging.info(f"💾 [BOT: {BOT_NAME}] Final save semua data...")
     pending_snapshot = get_queue_snapshot(pending_queue) if pending_queue else []
@@ -5991,7 +5422,6 @@ async def on_shutdown(app) -> None:
 # === SIGNAL HANDLER ===
 # ============================================================
 def handle_shutdown(signum, frame):
-    """Handle shutdown signal dengan timeout"""
     logging.info(
         f"⚠️ [BOT: {BOT_NAME}] Shutdown signal diterima ({signum}), "
         f"graceful shutdown dalam 30 detik..."
@@ -6022,7 +5452,6 @@ async def error_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Global error handler"""
     error = context.error
     if error is None:
         return
@@ -6039,7 +5468,6 @@ async def error_handler(
 # === MAIN ===
 # ============================================================
 def main():
-    """Main entry point"""
     try:
         signal.signal(signal.SIGINT, handle_shutdown)
     except Exception as e:
@@ -6095,7 +5523,6 @@ def main():
     app.add_handler(CommandHandler("resume", cmd_resume))
     app.add_handler(CommandHandler("resetdaily", cmd_resetdaily))
     app.add_handler(CommandHandler("flushpending", cmd_flushpending))
-    app.add_handler(CommandHandler("resetflood", cmd_resetflood))
     app.add_handler(CommandHandler("restart", cmd_restart))
     app.add_handler(CommandHandler("shutdown", cmd_shutdown))
     app.add_handler(CommandHandler("log", cmd_log))
